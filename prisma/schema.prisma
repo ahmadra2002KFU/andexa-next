@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  chats         Chat[]
+  rules         Rule[]
+  files         UploadedFile[]
+}
+
+model Chat {
+  id        String    @id @default(cuid())
+  title     String?
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id               String   @id @default(cuid())
+  chatId           String
+  chat             Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  role             String
+  content          String
+  generatedCode    String?
+  commentary       String?
+  executionResults Json?
+  groundTruthKpis  Json?
+  provider         String?
+  createdAt        DateTime @default(now())
+}
+
+model Rule {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String?
+  text      String
+  category  String   @default("general")
+  priority  Int      @default(1)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UploadedFile {
+  id               String   @id @default(cuid())
+  userId           String?
+  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId        String?
+  originalFilename String
+  storedFilename   String
+  storedPath       String
+  sizeMb           Float
+  rows             Int
+  columns          Int
+  columnMetadata   Json?
+  isActive         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+}

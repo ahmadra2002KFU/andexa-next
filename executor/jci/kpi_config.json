@@ -1,0 +1,73 @@
+{
+  "kpis": [
+    {
+      "id": "hand_hygiene",
+      "label": "Hand Hygiene Compliance",
+      "target": 90,
+      "unit": "%",
+      "category": "Infection Control",
+      "jci_standard": "PCI.9"
+    },
+    {
+      "id": "patient_falls",
+      "label": "Patient Falls Rate",
+      "target": 2.0,
+      "unit": "per 1000 patient days",
+      "category": "Patient Safety",
+      "jci_standard": "IPSG.6",
+      "direction": "lower_is_better"
+    },
+    {
+      "id": "medication_errors",
+      "label": "Medication Error Rate",
+      "target": 0.5,
+      "unit": "%",
+      "category": "Medication Management",
+      "jci_standard": "MMU.7",
+      "direction": "lower_is_better"
+    },
+    {
+      "id": "surgical_site_infection",
+      "label": "Surgical Site Infection Rate",
+      "target": 2.0,
+      "unit": "%",
+      "category": "Infection Control",
+      "jci_standard": "PCI.5",
+      "direction": "lower_is_better"
+    },
+    {
+      "id": "mortality_rate",
+      "label": "Hospital Mortality Rate",
+      "target": 1.5,
+      "unit": "%",
+      "category": "Clinical Outcomes",
+      "jci_standard": "QPS.5",
+      "direction": "lower_is_better"
+    },
+    {
+      "id": "readmission_rate",
+      "label": "30-Day Readmission Rate",
+      "target": 10.0,
+      "unit": "%",
+      "category": "Clinical Outcomes",
+      "jci_standard": "QPS.8",
+      "direction": "lower_is_better"
+    },
+    {
+      "id": "patient_satisfaction",
+      "label": "Patient Satisfaction Score",
+      "target": 85,
+      "unit": "%",
+      "category": "Patient Experience",
+      "jci_standard": "PFR.1"
+    },
+    {
+      "id": "bed_occupancy",
+      "label": "Bed Occupancy Rate",
+      "target": 85,
+      "unit": "%",
+      "category": "Facility Management",
+      "jci_standard": "FMS.4"
+    }
+  ]
+}

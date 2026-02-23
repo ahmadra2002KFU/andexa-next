@@ -1,0 +1,48 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://andexa:andexa@db:5432/andexa?schema=public
+      - EXECUTOR_URL=http://executor:8020
+    depends_on:
+      db:
+        condition: service_healthy
+      executor:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+
+  executor:
+    build: ./executor
+    ports:
+      - "8020:8020"
+    volumes:
+      - uploads:/app/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: andexa
+      POSTGRES_PASSWORD: andexa
+      POSTGRES_DB: andexa
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U andexa"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  uploads:
+  pgdata:
