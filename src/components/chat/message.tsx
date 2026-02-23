@@ -1,21 +1,24 @@
 "use client"
 
 import type { ChatMessage, AssistantResponse } from "@/types/chat"
+import type { ToolPhaseStatus } from "@/types"
 import { AnalysisSection } from "./analysis-section"
 import { CodeBlock } from "./code-block"
 import { ResultsSection } from "./results-section"
 import { Visualization } from "./visualization"
 import { CommentarySection } from "./commentary-section"
 import { GenerationButtons } from "./generation-buttons"
+import { ToolPhaseIndicator } from "./tool-phase-indicator"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 
 interface MessageProps {
   message: ChatMessage
   isStreaming?: boolean
   streamingResponse?: Partial<AssistantResponse>
+  toolPhase?: ToolPhaseStatus
 }
 
-export function Message({ message, isStreaming, streamingResponse }: MessageProps) {
+export function Message({ message, isStreaming, streamingResponse, toolPhase }: MessageProps) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end gap-3 py-3">
@@ -47,6 +50,9 @@ export function Message({ message, isStreaming, streamingResponse }: MessageProp
         <AvatarFallback className="bg-primary text-primary-foreground text-xs">A</AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
+        {isStreaming && toolPhase && toolPhase.phase !== "idle" && (
+          <ToolPhaseIndicator toolPhase={toolPhase} />
+        )}
         {hasAnalysis && (
           <div className="animate-in fade-in duration-300">
             <AnalysisSection content={resp.analysis || ""} isStreaming={isStreaming} />

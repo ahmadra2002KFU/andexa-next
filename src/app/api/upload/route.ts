@@ -11,10 +11,19 @@ export async function POST(req: Request) {
   const file = formData.get("file") as File | null;
   if (!file) return Response.json({ error: "No file provided" }, { status: 400 });
 
-  const ext = file.name.split(".").pop()?.toLowerCase();
+  // Strip directory prefix from folder uploads (e.g. "data/file.csv" -> "file.csv")
+  const cleanName = file.name.includes("/")
+    ? file.name.split("/").pop()!
+    : file.name;
+
+  const ext = cleanName.split(".").pop()?.toLowerCase();
   if (!ext || !["csv", "xlsx", "xls"].includes(ext)) {
     return Response.json({ error: "Only CSV and Excel files are supported" }, { status: 400 });
   }
+
+  // Check if this is part of a folder upload (skip deactivating other files)
+  const url = new URL(req.url);
+  const skipDeactivate = url.searchParams.get("skipDeactivate") === "true";
 
   // Forward to Python executor for processing
   const execForm = new FormData();
@@ -24,13 +33,15 @@ export async function POST(req: Request) {
   try {
     const result = await executorClient.uploadFile(execForm);
 
-    // Deactivate other files, create DB record
-    await prisma.uploadedFile.updateMany({ where: { userId }, data: { isActive: false } });
+    // Deactivate other files only for single uploads, not folder uploads
+    if (!skipDeactivate) {
+      await prisma.uploadedFile.updateMany({ where: { userId }, data: { isActive: false } });
+    }
 
     const dbFile = await prisma.uploadedFile.create({
       data: {
         userId,
-        originalFilename: file.name,
+        originalFilename: cleanName,
         storedFilename: result.filename,
         storedPath: result.stored_path,
         sizeMb: Math.round((file.size / (1024 * 1024)) * 1000) / 1000,

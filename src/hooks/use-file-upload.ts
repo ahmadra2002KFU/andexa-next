@@ -19,9 +19,10 @@ export function useFileUpload() {
       })
       if (!res.ok) throw new Error("Upload failed")
       const data = await res.json()
+      const cleanName = file.name.includes("/") ? file.name.split("/").pop()! : file.name
       const uploaded: UploadedFile = {
-        id: data.id || file.name,
-        name: data.originalFilename || file.name,
+        id: data.id || cleanName,
+        name: data.originalFilename || cleanName,
         size: file.size,
         type: file.type,
         active: true,
@@ -31,7 +32,7 @@ export function useFileUpload() {
       setActiveFile(uploaded.id)
       if (data.rows != null) {
         setMetadata({
-          filename: data.originalFilename || file.name,
+          filename: data.originalFilename || cleanName,
           rows: data.rows,
           columns: data.columns,
           size: `${data.sizeMb ?? 0} MB`,
@@ -55,7 +56,14 @@ export function useFileUpload() {
     if (validFiles.length === 0) return
 
     setFolderUpload(true, validFiles.length, 0)
-    let firstFileId: string | null = null
+    let lastFileId: string | null = null
+
+    // Deactivate all existing files once before the batch
+    try {
+      await fetch("/api/files/deactivate-all", { method: "POST" })
+    } catch {
+      // non-critical
+    }
 
     for (let i = 0; i < validFiles.length; i++) {
       const file = validFiles[i]
@@ -63,22 +71,23 @@ export function useFileUpload() {
       formData.append("file", file)
 
       try {
-        const res = await fetch("/api/upload", {
+        const res = await fetch("/api/upload?skipDeactivate=true", {
           method: "POST",
           body: formData,
         })
         if (!res.ok) throw new Error("Upload failed")
         const data = await res.json()
+        const cleanName = file.name.includes("/") ? file.name.split("/").pop()! : file.name
         const uploaded: UploadedFile = {
-          id: data.id || file.name,
-          name: data.originalFilename || file.name,
+          id: data.id || cleanName,
+          name: data.originalFilename || cleanName,
           size: file.size,
           type: file.type,
           active: true,
           uploadedAt: new Date().toISOString(),
         }
         addFile(uploaded)
-        if (i === 0) firstFileId = uploaded.id
+        lastFileId = uploaded.id
         if (data.rows != null) {
           setMetadata({
             filename: data.originalFilename || file.name,
@@ -94,7 +103,7 @@ export function useFileUpload() {
       setFolderUpload(true, validFiles.length, i + 1)
     }
 
-    if (firstFileId) setActiveFile(firstFileId)
+    if (lastFileId) setActiveFile(lastFileId)
     setFolderUpload(false)
   }, [addFile, setActiveFile, setMetadata, setFolderUpload])
 
@@ -103,12 +112,25 @@ export function useFileUpload() {
       const res = await fetch("/api/files")
       if (res.ok) {
         const data = await res.json()
-        setFiles(Array.isArray(data) ? data : data.files || [])
+        const raw: any[] = Array.isArray(data) ? data : data.files || []
+        // Map DB shape (originalFilename, isActive) to store shape (name, active)
+        const mapped: UploadedFile[] = raw.map((f: any) => ({
+          id: f.id,
+          name: f.originalFilename ?? f.name ?? "unknown",
+          size: (f.sizeMb ?? 0) * 1024 * 1024,
+          type: "",
+          active: f.isActive ?? f.active ?? false,
+          uploadedAt: f.createdAt ?? f.uploadedAt ?? new Date().toISOString(),
+        }))
+        setFiles(mapped)
+        // Set the active file from DB
+        const active = mapped.find((f) => f.active)
+        if (active) setActiveFile(active.id)
       }
     } catch {
       // API may not exist yet
     }
-  }, [setFiles])
+  }, [setFiles, setActiveFile])
 
   const deleteFile = useCallback(async (id: string) => {
     try {

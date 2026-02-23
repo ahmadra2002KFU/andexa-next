@@ -7,7 +7,7 @@ import { Message } from "./message"
 import { ChatInput } from "./chat-input"
 
 export function ChatContainer() {
-  const { messages, isStreaming, streamingResponse, activeMessageId, sendMessage } = useChat()
+  const { messages, isStreaming, streamingResponse, activeMessageId, toolPhase, sendMessage } = useChat()
   const scrollRef = useRef<HTMLDivElement>(null)
   const [exampleText, setExampleText] = useState("")
 
@@ -49,6 +49,7 @@ export function ChatContainer() {
                 streamingResponse={
                   msg.id === activeMessageId ? streamingResponse : undefined
                 }
+                toolPhase={msg.id === activeMessageId ? toolPhase : undefined}
               />
             ))}
           </div>

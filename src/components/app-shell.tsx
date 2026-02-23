@@ -39,7 +39,7 @@ export function AppShell({ userName }: AppShellProps) {
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="flex items-center gap-2">
                 <Avatar className="h-7 w-7">
-                  <AvatarFallback className="text-xs">{userName[0]?.toUpperCase()}</AvatarFallback>
+                  <AvatarFallback className="text-xs bg-primary text-primary-foreground">{userName[0]?.toUpperCase()}</AvatarFallback>
                 </Avatar>
                 <span className="text-sm">{userName}</span>
               </Button>

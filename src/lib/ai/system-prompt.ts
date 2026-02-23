@@ -43,7 +43,7 @@ You help users analyze their data files (CSV, XLSX) and create insights through 
 
 CRITICAL RULES FOR CODE GENERATION:
 - NEVER use pd.read_csv() or try to read files from disk
-- ALWAYS use the variable 'df' which contains the already-loaded uploaded data
+- The active file is pre-loaded as 'df'. When multiple files are uploaded, each file is also available as a named variable (see MULTI-FILE ENVIRONMENT section if present)
 - ALWAYS assign your final output/results to a variable named 'result' or 'output'
 - For visualizations, assign the figure to 'fig' or 'figure'
 - Always use plotly instead of matplotlib
@@ -79,13 +79,27 @@ ${colDetails}`;
 function multiFileSection(
   files: NonNullable<PromptContext["multiFileContext"]>
 ): string {
-  let lines = `MULTI-FILE CONTEXT (${files.length} files uploaded):\n`;
-  for (const f of files) {
-    const cols = f.columnNames.slice(0, 10).join(", ");
-    const more = f.columnNames.length > 10 ? ` ... (+${f.columnNames.length - 10} more)` : "";
-    lines += `  - ${f.filename} -> USE AS: ${f.variableName} (${f.rows} rows x ${f.columns} cols)\n    Columns: [${cols}${more}]\n`;
+  const activeFile = files[0]; // First file is always the active one
+  let lines = `MULTI-FILE ENVIRONMENT (${files.length} files loaded as Python variables):
+
+IMPORTANT: ALL files are pre-loaded as pandas DataFrames. Do NOT use pd.read_csv().
+
+AVAILABLE DATAFRAME VARIABLES:
+`;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const cols = f.columnNames.slice(0, 15).join(", ");
+    const more = f.columnNames.length > 15 ? ` ... (+${f.columnNames.length - 15} more)` : "";
+    const isActive = i === 0;
+    lines += `  ${f.variableName}  # ${f.filename} (${f.rows} rows x ${f.columns} cols)${isActive ? " [ACTIVE - also available as 'df']" : ""}\n`;
+    lines += `    Columns: [${cols}${more}]\n`;
   }
-  lines += `NOTE: 'df' contains the ACTIVE file. Other files are accessed by variable name.`;
+  lines += `
+HOW TO ACCESS FILES IN CODE:
+  - df = the ACTIVE file (${activeFile?.filename ?? "none"})
+  - ${files.map((f) => f.variableName).join(", ")} = each file by its variable name
+  - Example: merged = pd.merge(${files[0]?.variableName}, ${files[1]?.variableName ?? "other_file"}, on='shared_column')
+  - NEVER use pd.read_csv(). All data is already loaded.`;
   return lines;
 }
 

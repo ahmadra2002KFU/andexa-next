@@ -336,7 +336,9 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
 
     # Save to uploads directory with unique name
-    stored_name = f"{uuid.uuid4().hex}_{file.filename}"
+    # Strip directory prefix from folder uploads (browser sends "folder/file.csv")
+    safe_filename = file.filename.replace("\\", "/").split("/")[-1]
+    stored_name = f"{uuid.uuid4().hex}_{safe_filename}"
     stored_path = UPLOAD_DIR / stored_name
     with open(stored_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -351,7 +353,7 @@ async def upload_file(
     # Build column metadata
     column_metadata: Dict[str, Any] = {
         "basic_info": {
-            "filename": file.filename,
+            "filename": safe_filename,
             "shape": {"rows": len(df), "columns": len(df.columns)},
             "column_names": list(df.columns),
             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},

@@ -10,8 +10,11 @@ const sora = Sora({
 })
 
 export const metadata: Metadata = {
-  title: "Andexa",
+  title: "Andexa - Chat with your data",
   description: "AI-powered data analysis platform",
+  icons: {
+    icon: "/Andexa2.png",
+  },
 }
 
 export default function RootLayout({

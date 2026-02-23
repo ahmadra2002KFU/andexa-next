@@ -206,6 +206,10 @@ export function ResultsSection({ results, isStreaming }: ResultsSectionProps) {
 
   if (!results) return null
 
+  // --- No meaningful content: hide entirely ---
+  const hasNoContent = !results.success && !results.error && !results.result && !results.dataframe
+  if (hasNoContent) return null
+
   // --- Error ---
   if (!results.success && results.error) {
     return (

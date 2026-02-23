@@ -4,7 +4,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/prisma";
 import { getModel } from "@/lib/ai/providers";
 import { buildSystemPrompt } from "@/lib/ai/system-prompt";
-import { createDataTools } from "@/lib/ai/tools";
+import { createDataTools, filenameToVariable } from "@/lib/ai/tools";
 import { executeWithRetry } from "@/lib/ai/retry";
 import { extractGroundTruth } from "@/lib/ai/ground-truth";
 import { chatRequestSchema } from "@/lib/validators/schemas";
@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     const basicInfo = (meta?.basic_info ?? {}) as Record<string, unknown>;
     return {
       filename: f.originalFilename,
-      variableName: f.originalFilename.replace(/\.[^.]+$/, "").toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, ""),
+      variableName: filenameToVariable(f.originalFilename),
       rows: f.rows,
       columns: f.columns,
       columnNames: (basicInfo.column_names as string[]) ?? [],
@@ -84,6 +84,7 @@ export async function POST(req: Request) {
       let toolContext = "";
       if (allFiles.length > 0) {
         await sendEvent({ type: "tool_phase_start", maxIterations: 5 });
+        const toolStart = Date.now();
         try {
           const tools = createDataTools(userId);
           const toolResult = await generateText({
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
             system: systemPrompt + "\n\nYou have access to data exploration tools. Use them to understand the data before writing code.",
             prompt: message,
             tools,
-            maxOutputTokens: 4096,
+            maxOutputTokens: 2048,
             temperature: 0.3,
           });
 
@@ -119,10 +120,11 @@ export async function POST(req: Request) {
             }
             toolLines.push("[END TOOL RESULTS]");
             toolContext = toolLines.join("\n");
-            await sendEvent({ type: "tool_phase_complete", toolCount, durationMs: 0 });
           }
+          await sendEvent({ type: "tool_phase_complete", toolCount: toolContext ? toolContext.split("\n").length : 0, durationMs: Date.now() - toolStart });
         } catch (err) {
           console.error("Tool phase error:", err);
+          await sendEvent({ type: "tool_phase_complete", toolCount: 0, durationMs: Date.now() - toolStart });
         }
       }
 
@@ -135,44 +137,58 @@ export async function POST(req: Request) {
       });
 
       // ── Phase 2: Layer 1 — streamed structured response ──────
-      const { partialObjectStream } = streamObject({
-        model: getModel(provider),
-        schema: z.object({
-          initial_response: z.string(),
-          generated_code: z.string(),
-          result_commentary: z.string(),
-        }),
-        system: finalPrompt,
-        prompt: message,
-        temperature: 0.3,
-      });
+      // Send a "thinking" status so frontend shows the thinking indicator
+      await sendEvent({ type: "phase", phase: "thinking" });
 
       let lastAnalysis = "";
       let lastCode = "";
-      let lastResultCommentary = "";
 
-      for await (const partial of partialObjectStream) {
-        if (partial.initial_response && partial.initial_response !== lastAnalysis) {
-          const delta = partial.initial_response.slice(lastAnalysis.length);
-          if (delta) {
-            await sendEvent({ type: "analysis_delta", delta });
+      try {
+        const { partialObjectStream } = streamObject({
+          model: getModel(provider),
+          schema: z.object({
+            initial_response: z.string(),
+            generated_code: z.string(),
+          }),
+          system: finalPrompt,
+          prompt: message,
+          temperature: 0.3,
+        });
+
+        for await (const partial of partialObjectStream) {
+          if (partial.initial_response && partial.initial_response !== lastAnalysis) {
+            const delta = partial.initial_response.slice(lastAnalysis.length);
+            if (delta) {
+              await sendEvent({ type: "analysis_delta", delta });
+            }
+            lastAnalysis = partial.initial_response;
           }
-          lastAnalysis = partial.initial_response;
-        }
-        if (partial.generated_code && partial.generated_code !== lastCode) {
-          const delta = partial.generated_code.slice(lastCode.length);
-          if (delta) {
-            await sendEvent({ type: "code_delta", delta });
+          if (partial.generated_code && partial.generated_code !== lastCode) {
+            const delta = partial.generated_code.slice(lastCode.length);
+            if (delta) {
+              await sendEvent({ type: "code_delta", delta });
+            }
+            lastCode = partial.generated_code;
           }
-          lastCode = partial.generated_code;
         }
-        if (partial.result_commentary && partial.result_commentary !== lastResultCommentary) {
-          lastResultCommentary = partial.result_commentary;
+      } catch (streamErr) {
+        console.error("streamObject error:", streamErr);
+        if (!lastAnalysis && !lastCode) {
+          const errMsg = streamErr instanceof Error ? streamErr.message : "LLM streaming failed";
+          await sendEvent({ type: "error", message: `Analysis failed: ${errMsg}. Try again or switch provider.` });
+          await sendEvent({ type: "done", chatId: chatId! });
+          return;
         }
       }
 
       const analysis = lastAnalysis;
       const generatedCode = lastCode;
+
+      if (!analysis && !generatedCode) {
+        await sendEvent({ type: "error", message: "The model returned an empty response. Try again or switch providers." });
+        await sendEvent({ type: "done", chatId: chatId! });
+        return;
+      }
 
       await sendEvent({ type: "analysis_done", content: analysis });
       await sendEvent({ type: "code_done", content: generatedCode });
@@ -181,10 +197,17 @@ export async function POST(req: Request) {
       let executionResult: ExecutionResult = { success: false, output: "", results: {} };
 
       if (generatedCode.trim()) {
+        await sendEvent({ type: "phase", phase: "executing" });
         const columns = fileMetadata?.basic_info.column_names ?? [];
         const dtypes = fileMetadata?.basic_info.dtypes ?? {};
 
-        const filePaths = activeFile ? [activeFile.storedPath] : [];
+        // Pass ALL files to the executor so multi-file code works.
+        // Active file first (becomes `df`), then all others by variable name.
+        const filePaths: string[] = [];
+        if (activeFile) filePaths.push(activeFile.storedPath);
+        for (const f of allFiles) {
+          if (f.id !== activeFile?.id) filePaths.push(f.storedPath);
+        }
         const retryResult = await executeWithRetry({
           code: generatedCode,
           userQuery: message,
@@ -205,13 +228,17 @@ export async function POST(req: Request) {
         }
       }
 
-      await sendEvent({ type: "execution", result: executionResult });
+      // Only send execution event if code was actually executed
+      if (generatedCode.trim()) {
+        await sendEvent({ type: "execution", result: executionResult });
+      }
 
       // ── Phase 4: Ground truth extraction ───────────────────────
       const groundTruthKpis = executionResult.success ? extractGroundTruth(executionResult) : [];
 
       // ── Phase 5: Layer 3 — Commentary ──────────────────────────
-      let commentary = lastResultCommentary || "";
+      await sendEvent({ type: "phase", phase: "commenting" });
+      let commentary = "";
       if (executionResult.success && generatedCode.trim()) {
         try {
           const execSummary = JSON.stringify({

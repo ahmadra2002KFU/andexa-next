@@ -24,7 +24,7 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       provider: "groq",
       sidebarOpen: true,
-      sidebarWidth: 320,
+      sidebarWidth: 280,
       autoExpandCode: true,
       showExecutionTime: true,
       analysisMode: "normal",

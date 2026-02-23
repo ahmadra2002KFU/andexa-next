@@ -12,10 +12,14 @@ export function useChat() {
     isStreaming,
     streamingResponse,
     activeMessageId,
+    toolPhase,
     addUserMessage,
     startStreaming,
     updateStreamingField,
     replaceStreamingField,
+    setToolPhase,
+    addToolCall,
+    updateToolCall,
     finalizeResponse,
     stopStreaming,
     clearMessages,
@@ -97,6 +101,7 @@ export function useChat() {
     switch (event.type) {
       // ── Streaming delta events ──
       case "analysis_delta":
+        if (!acc.analysis) setToolPhase({ active: true, phase: "thinking" })
         acc.analysis = (acc.analysis || "") + event.delta
         updateStreamingField("analysis", acc.analysis)
         break
@@ -117,6 +122,7 @@ export function useChat() {
         break
 
       case "commentary_delta":
+        if (!acc.commentary) setToolPhase({ active: true, phase: "commenting" })
         acc.commentary = (acc.commentary || "") + event.delta
         updateStreamingField("commentary", acc.commentary)
         break
@@ -143,6 +149,7 @@ export function useChat() {
         break
 
       case "execution": {
+        setToolPhase({ active: false, phase: "idle" })
         const er = event.result as unknown as Record<string, unknown>
         const backendResults = (er.results ?? {}) as Record<string, unknown>
 
@@ -188,9 +195,32 @@ export function useChat() {
         break
       }
 
+      case "phase":
+        setToolPhase({ active: true, phase: event.phase })
+        break
+
+      case "tool_phase_start":
+        setToolPhase({ active: true, phase: "tools", toolCalls: [] })
+        break
+
+      case "tool_call":
+        addToolCall({ iteration: event.iteration, toolName: event.toolName, status: "calling" })
+        break
+
+      case "tool_result":
+        updateToolCall(event.iteration, { status: "done", summary: event.summary })
+        break
+
+      case "tool_phase_complete":
+        setToolPhase({ active: false, phase: "thinking" })
+        break
+
       case "retry_start":
+        setToolPhase({ active: true, phase: "retrying", retryAttempt: event.attempt, retryError: event.errorType })
+        break
+
       case "retry_failed":
-        // Could track retry events for UI display
+        setToolPhase({ active: false, phase: "idle", retryExplanation: event.explanation })
         break
 
       case "error":
@@ -199,7 +229,7 @@ export function useChat() {
         break
 
       case "done":
-        // Stream complete
+        setToolPhase({ active: false, phase: "idle" })
         break
     }
   }
@@ -214,6 +244,7 @@ export function useChat() {
     isStreaming,
     streamingResponse,
     activeMessageId,
+    toolPhase,
     sendMessage,
     cancel,
     clearMessages,

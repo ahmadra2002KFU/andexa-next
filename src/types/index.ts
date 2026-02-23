@@ -163,6 +163,16 @@ export interface DashboardConfig {
   recommendations: string[];
 }
 
+// ── Tool Phase Status ─────────────────────────────────────────────────
+export interface ToolPhaseStatus {
+  active: boolean;
+  phase: "tools" | "thinking" | "executing" | "retrying" | "commenting" | "idle";
+  toolCalls: Array<{ iteration: number; toolName: string; status: "calling" | "done"; summary?: string }>;
+  retryAttempt?: number;
+  retryError?: string;
+  retryExplanation?: string;
+}
+
 // ── Streaming Events ──────────────────────────────────────────────────
 export type StreamEvent =
   | { type: "tool_phase_start"; maxIterations: number }
@@ -182,5 +192,6 @@ export type StreamEvent =
   | { type: "retry_start"; attempt: number; errorType: string }
   | { type: "retry_complete"; attempt: number }
   | { type: "retry_failed"; totalAttempts: number; explanation?: string }
+  | { type: "phase"; phase: "tools" | "thinking" | "executing" | "retrying" | "commenting" }
   | { type: "error"; message: string }
   | { type: "done"; chatId: string };

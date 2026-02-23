@@ -7,6 +7,7 @@
  */
 
 import { prisma } from "@/lib/db/prisma";
+import { filenameToVariable } from "@/lib/ai/tools";
 import type { ColumnMetadata } from "@/types";
 
 /**
@@ -35,11 +36,7 @@ export async function getAllFilesSchema(userId: string) {
     const meta = f.columnMetadata as Record<string, unknown> | null;
     const basicInfo = (meta?.basic_info ?? {}) as Record<string, unknown>;
     const cols = (basicInfo.column_names as string[]) ?? [];
-    const varName = f.originalFilename
-      .replace(/\.[^.]+$/, "")
-      .toLowerCase()
-      .replace(/[\s-]+/g, "_")
-      .replace(/[^a-z0-9_]/g, "");
+    const varName = filenameToVariable(f.originalFilename);
 
     schemas[varName] = { columns: cols, variableName: varName, rows: f.rows };
 

@@ -118,12 +118,20 @@ export function createDataTools(userId: string): Record<string, AnyTool> {
   };
 }
 
-function filenameToVariable(filename: string): string {
-  return filename
-    .replace(/\.[^.]+$/, "")
+/**
+ * Convert a filename to a valid Python variable name.
+ * Must match the executor's logic in executor.py (Path(fp).stem sanitization).
+ * e.g. "Hospital_Patients_Master.csv" → "hospital_patients_master"
+ *      "data/Admissions_Log.xlsx" → "admissions_log"
+ */
+export function filenameToVariable(filename: string): string {
+  // Strip any directory prefix (e.g. "data/")
+  const basename = filename.replace(/^.*[\\/]/, "");
+  return basename
+    .replace(/\.[^.]+$/, "")        // strip extension
     .toLowerCase()
-    .replace(/[\s-]+/g, "_")
-    .replace(/[^a-z0-9_]/g, "");
+    .replace(/[\s-]+/g, "_")        // spaces/hyphens → underscore
+    .replace(/[^a-z0-9_]/g, "");    // strip non-identifier chars
 }
 
 function getColumnNames(metadata: unknown): string[] {
