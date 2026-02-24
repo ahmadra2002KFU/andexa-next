@@ -6,6 +6,7 @@ import { useSettingsStore } from "@/stores/settings-store"
 import { useFileStore } from "@/stores/file-store"
 import type { AssistantResponse, PlotData, ExecutionResult } from "@/types/chat"
 import type { StreamEvent } from "@/types"
+import { getOrCreateWorkspaceSessionId } from "@/lib/workspace-session"
 
 function isTraceExecEnabled(): boolean {
   if (process.env.NEXT_PUBLIC_ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production") {
@@ -123,11 +124,17 @@ export function useChat() {
 
       try {
         abortRef.current = new AbortController()
+        const workspaceSessionId = getOrCreateWorkspaceSessionId()
         log.info("Sending chat request", { provider, messageLength: content.length })
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: content, provider, activeFileId: activeFileId ?? undefined }),
+          body: JSON.stringify({
+            message: content,
+            provider,
+            activeFileId: activeFileId ?? undefined,
+            workspaceSessionId,
+          }),
           signal: abortRef.current.signal,
         })
 

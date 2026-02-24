@@ -2,7 +2,8 @@
 
 import { useCallback } from "react"
 import { useFileStore } from "@/stores/file-store"
-import type { UploadedFile, FileMetadata } from "@/types/files"
+import type { UploadedFile } from "@/types/files"
+import { getOrCreateWorkspaceSessionId, resetWorkspaceSessionId } from "@/lib/workspace-session"
 
 export function useFileUpload() {
   const { files, activeFileId, metadata, uploading, uploadProgress, folderUploading, folderUploadTotal, folderUploadCompleted, setFiles, addFile, removeFile, setActiveFile, setMetadata, setUploading, setFolderUpload, clearAll } = useFileStore()
@@ -11,9 +12,10 @@ export function useFileUpload() {
     setUploading(true, 0)
     const formData = new FormData()
     formData.append("file", file)
+    const workspaceSessionId = getOrCreateWorkspaceSessionId()
 
     try {
-      const res = await fetch("/api/upload", {
+      const res = await fetch(`/api/upload?workspaceSessionId=${encodeURIComponent(workspaceSessionId)}`, {
         method: "POST",
         body: formData,
       })
@@ -55,12 +57,15 @@ export function useFileUpload() {
 
     if (validFiles.length === 0) return
 
+    // New folder upload starts a new workspace session.
+    const workspaceSessionId = resetWorkspaceSessionId()
+    clearAll()
     setFolderUpload(true, validFiles.length, 0)
     let lastFileId: string | null = null
 
     // Deactivate all existing files once before the batch
     try {
-      await fetch("/api/files/deactivate-all", { method: "POST" })
+      await fetch(`/api/files/deactivate-all?workspaceSessionId=${encodeURIComponent(workspaceSessionId)}`, { method: "POST" })
     } catch {
       // non-critical
     }
@@ -71,10 +76,13 @@ export function useFileUpload() {
       formData.append("file", file)
 
       try {
-        const res = await fetch("/api/upload?skipDeactivate=true", {
+        const res = await fetch(
+          `/api/upload?skipDeactivate=true&workspaceSessionId=${encodeURIComponent(workspaceSessionId)}`,
+          {
           method: "POST",
           body: formData,
-        })
+          }
+        )
         if (!res.ok) throw new Error("Upload failed")
         const data = await res.json()
         const cleanName = file.name.includes("/") ? file.name.split("/").pop()! : file.name
@@ -105,16 +113,27 @@ export function useFileUpload() {
 
     if (lastFileId) setActiveFile(lastFileId)
     setFolderUpload(false)
-  }, [addFile, setActiveFile, setMetadata, setFolderUpload])
+  }, [addFile, clearAll, setActiveFile, setMetadata, setFolderUpload])
 
   const fetchFiles = useCallback(async () => {
+    const workspaceSessionId = getOrCreateWorkspaceSessionId()
     try {
-      const res = await fetch("/api/files")
+      const res = await fetch(`/api/files?workspaceSessionId=${encodeURIComponent(workspaceSessionId)}`)
       if (res.ok) {
         const data = await res.json()
-        const raw: any[] = Array.isArray(data) ? data : data.files || []
+        type ApiUploadedFile = {
+          id: string
+          originalFilename?: string
+          name?: string
+          sizeMb?: number
+          isActive?: boolean
+          active?: boolean
+          createdAt?: string
+          uploadedAt?: string
+        }
+        const raw: ApiUploadedFile[] = Array.isArray(data) ? data : data.files || []
         // Map DB shape (originalFilename, isActive) to store shape (name, active)
-        const mapped: UploadedFile[] = raw.map((f: any) => ({
+        const mapped: UploadedFile[] = raw.map((f) => ({
           id: f.id,
           name: f.originalFilename ?? f.name ?? "unknown",
           size: (f.sizeMb ?? 0) * 1024 * 1024,
@@ -133,8 +152,9 @@ export function useFileUpload() {
   }, [setFiles, setActiveFile])
 
   const deleteFile = useCallback(async (id: string) => {
+    const workspaceSessionId = getOrCreateWorkspaceSessionId()
     try {
-      await fetch(`/api/files/${id}`, { method: "DELETE" })
+      await fetch(`/api/files/${id}?workspaceSessionId=${encodeURIComponent(workspaceSessionId)}`, { method: "DELETE" })
       removeFile(id)
     } catch {
       removeFile(id)

@@ -3,20 +3,45 @@ import { prisma } from "@/lib/db/prisma";
 import { executorClient } from "@/lib/executor/client";
 import type { Tool } from "ai";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>;
+type CreateDataToolsOptions = {
+  contextFileIds?: string[];
+  workspaceSessionId?: string;
+};
+
+function buildScopedFileWhere(userId: string, options: CreateDataToolsOptions) {
+  return {
+    userId,
+    ...(options.workspaceSessionId ? { sessionId: options.workspaceSessionId } : {}),
+    ...(options.contextFileIds && options.contextFileIds.length > 0
+      ? { id: { in: options.contextFileIds } }
+      : {}),
+  };
+}
+
+function buildSessionFileWhere(userId: string, options: CreateDataToolsOptions) {
+  return {
+    userId,
+    ...(options.workspaceSessionId ? { sessionId: options.workspaceSessionId } : {}),
+  };
+}
 
 /**
  * Create data exploration tools bound to a specific user.
  */
-export function createDataTools(userId: string): Record<string, AnyTool> {
+export function createDataTools(
+  userId: string,
+  options: CreateDataToolsOptions = {}
+): Record<string, AnyTool> {
   return {
     discoverData: {
       description:
-        "List ALL uploaded files with column names, row counts, and variable names. Call this FIRST when multiple files may be involved.",
+        "List all files in the current workspace session with column names, row counts, and variable names.",
       inputSchema: z.object({}),
       execute: async () => {
         const files = await prisma.uploadedFile.findMany({
-          where: { userId },
+          where: buildSessionFileWhere(userId, options),
           orderBy: { createdAt: "desc" },
         });
         if (files.length === 0) return { success: false, error: "No files uploaded." };
@@ -50,7 +75,10 @@ export function createDataTools(userId: string): Record<string, AnyTool> {
       }),
       execute: async (input: { fileName: string; columnName: string; sampleSize: number }) => {
         const file = await prisma.uploadedFile.findFirst({
-          where: { userId, originalFilename: input.fileName },
+          where: {
+            ...buildScopedFileWhere(userId, options),
+            originalFilename: input.fileName,
+          },
         });
         if (!file) return { success: false, error: `File '${input.fileName}' not found.` };
         return executorClient.inspectColumn(file.storedPath, input.columnName, input.sampleSize);
@@ -65,8 +93,18 @@ export function createDataTools(userId: string): Record<string, AnyTool> {
       }),
       execute: async (input: { file1: string; file2: string }) => {
         const [f1, f2] = await Promise.all([
-          prisma.uploadedFile.findFirst({ where: { userId, originalFilename: input.file1 } }),
-          prisma.uploadedFile.findFirst({ where: { userId, originalFilename: input.file2 } }),
+          prisma.uploadedFile.findFirst({
+            where: {
+              ...buildScopedFileWhere(userId, options),
+              originalFilename: input.file1,
+            },
+          }),
+          prisma.uploadedFile.findFirst({
+            where: {
+              ...buildScopedFileWhere(userId, options),
+              originalFilename: input.file2,
+            },
+          }),
         ]);
         if (!f1 || !f2) return { success: false, error: "One or both files not found." };
         const cols1 = getColumnNames(f1.columnMetadata);
@@ -91,10 +129,16 @@ export function createDataTools(userId: string): Record<string, AnyTool> {
       }),
       execute: async (input: { fileName: string }) => {
         const file = await prisma.uploadedFile.findFirst({
-          where: { userId, originalFilename: input.fileName },
+          where: {
+            ...buildScopedFileWhere(userId, options),
+            originalFilename: input.fileName,
+          },
         });
         if (!file) return { success: false, error: `File '${input.fileName}' not found.` };
-        await prisma.uploadedFile.updateMany({ where: { userId }, data: { isActive: false } });
+        await prisma.uploadedFile.updateMany({
+          where: buildSessionFileWhere(userId, options),
+          data: { isActive: false },
+        });
         await prisma.uploadedFile.update({ where: { id: file.id }, data: { isActive: true } });
         return { success: true, message: `Active file set to '${input.fileName}'.` };
       },
@@ -109,7 +153,10 @@ export function createDataTools(userId: string): Record<string, AnyTool> {
         const code = `result = ${input.expression}`;
         // Look up active file to get its stored path
         const activeFile = await prisma.uploadedFile.findFirst({
-          where: { userId, isActive: true },
+          where: {
+            ...buildScopedFileWhere(userId, options),
+            isActive: true,
+          },
         });
         const filePaths = activeFile ? [activeFile.storedPath] : [];
         return executorClient.executeCode(code, filePaths);

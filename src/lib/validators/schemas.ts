@@ -6,6 +6,7 @@ export const chatRequestSchema = z.object({
   provider: z.enum(["groq", "lmstudio", "zai", "ollama", "auto"]).default("groq"),
   chatId: z.string().optional(),
   activeFileId: z.string().optional(),
+  workspaceSessionId: z.string().optional(),
 });
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 

@@ -1,6 +1,15 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/prisma";
 import { executorClient } from "@/lib/executor/client";
+import { Prisma } from "@prisma/client";
+
+function parseWorkspaceSessionId(url: URL): string | null {
+  const raw = url.searchParams.get("workspaceSessionId");
+  if (!raw) return null;
+  const value = raw.trim();
+  if (!value) return null;
+  return value.slice(0, 128);
+}
 
 export async function POST(req: Request) {
   const session = await auth();
@@ -24,6 +33,7 @@ export async function POST(req: Request) {
   // Check if this is part of a folder upload (skip deactivating other files)
   const url = new URL(req.url);
   const skipDeactivate = url.searchParams.get("skipDeactivate") === "true";
+  const workspaceSessionId = parseWorkspaceSessionId(url);
 
   // Forward to Python executor for processing
   const execForm = new FormData();
@@ -35,19 +45,26 @@ export async function POST(req: Request) {
 
     // Deactivate other files only for single uploads, not folder uploads
     if (!skipDeactivate) {
-      await prisma.uploadedFile.updateMany({ where: { userId }, data: { isActive: false } });
+      await prisma.uploadedFile.updateMany({
+        where: {
+          userId,
+          ...(workspaceSessionId ? { sessionId: workspaceSessionId } : {}),
+        },
+        data: { isActive: false },
+      });
     }
 
     const dbFile = await prisma.uploadedFile.create({
       data: {
         userId,
+        sessionId: workspaceSessionId,
         originalFilename: cleanName,
         storedFilename: result.filename,
         storedPath: result.stored_path,
         sizeMb: Math.round((file.size / (1024 * 1024)) * 1000) / 1000,
         rows: result.rows,
         columns: result.columns,
-        columnMetadata: result.column_metadata as any,
+        columnMetadata: result.column_metadata as Prisma.InputJsonValue,
         isActive: true,
       },
     });

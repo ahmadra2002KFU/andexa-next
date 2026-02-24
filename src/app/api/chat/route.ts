@@ -9,6 +9,7 @@ import { executeWithRetry } from "@/lib/ai/retry";
 import { extractGroundTruth } from "@/lib/ai/ground-truth";
 import { chatRequestSchema } from "@/lib/validators/schemas";
 import type { ProviderType, ColumnMetadata, ExecutionResult } from "@/types";
+import { Prisma } from "@prisma/client";
 
 export const maxDuration = 120;
 const TRACE_EXEC = process.env.ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production";
@@ -41,6 +42,12 @@ const MAX_CONTEXT_FILES = (() => {
   if (!Number.isFinite(parsed)) return 4;
   return Math.min(20, Math.max(1, parsed));
 })();
+
+function normalizeWorkspaceSessionId(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, 128);
+}
 
 function normalizeToken(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -287,9 +294,16 @@ export async function POST(req: Request) {
     provider: providerInput,
     chatId: inputChatId,
     activeFileId: preferredActiveFileId,
+    workspaceSessionId: workspaceSessionIdInput,
   } = parsed.data;
+  const workspaceSessionId = normalizeWorkspaceSessionId(workspaceSessionIdInput);
   const provider = (providerInput === "auto" ? "groq" : providerInput) as ProviderType;
-  slog.info("Request", { provider, messageLength: message.length, chatId: inputChatId ?? "new" });
+  slog.info("Request", {
+    provider,
+    messageLength: message.length,
+    chatId: inputChatId ?? "new",
+    workspaceSession: workspaceSessionId ? "set" : "none",
+  });
 
   // 3. Get or create chat
   let chatId = inputChatId;
@@ -303,7 +317,10 @@ export async function POST(req: Request) {
   // 4. Fetch files + rules and build scoped context
   const [initialFiles, rules] = await Promise.all([
     prisma.uploadedFile.findMany({
-      where: { userId },
+      where: {
+        userId,
+        ...(workspaceSessionId ? { sessionId: workspaceSessionId } : {}),
+      },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -365,6 +382,7 @@ export async function POST(req: Request) {
         try {
           const tools = createDataTools(userId, {
             contextFileIds: scopedFiles.map((f) => f.id),
+            workspaceSessionId,
           });
           const toolResult = await generateText({
             model: getModel(provider),
@@ -390,8 +408,8 @@ export async function POST(req: Request) {
               }
               if (step.toolResults) {
                 for (const tr of step.toolResults) {
-                  const trAny = tr as any;
-                  const summary = JSON.stringify(trAny.result ?? trAny).slice(0, 300);
+                  const toolResult = (tr as { result?: unknown }).result ?? tr;
+                  const summary = JSON.stringify(toolResult).slice(0, 300);
                   toolLines.push(`   Result: ${summary}`);
                   await sendEvent({ type: "tool_result", iteration: toolCount, toolName: "tool", success: true, summary: summary.slice(0, 100) });
                 }
@@ -410,7 +428,10 @@ export async function POST(req: Request) {
       // Tools may have changed the active file. Recompute scope to keep prompt + execution aligned.
       if (allFiles.length > 0) {
         allFiles = (await prisma.uploadedFile.findMany({
-          where: { userId },
+          where: {
+            userId,
+            ...(workspaceSessionId ? { sessionId: workspaceSessionId } : {}),
+          },
           orderBy: { createdAt: "desc" },
           select: {
             id: true,
@@ -628,8 +649,11 @@ export async function POST(req: Request) {
             content: analysis,
             generatedCode: generatedCode || null,
             commentary: commentary || null,
-            executionResults: executionResult as any,
-            groundTruthKpis: groundTruthKpis.length > 0 ? (groundTruthKpis as any) : undefined,
+            executionResults: executionResult as unknown as Prisma.InputJsonValue,
+            groundTruthKpis:
+              groundTruthKpis.length > 0
+                ? (groundTruthKpis as unknown as Prisma.InputJsonValue)
+                : undefined,
             provider,
           },
         ],
