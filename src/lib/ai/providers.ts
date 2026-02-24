@@ -22,10 +22,10 @@ function getProviderConfigs(): ProviderConfig[] {
     },
     {
       id: "zai",
-      name: "Z.AI (GLM 4.6)",
+      name: "Z.AI (GLM 4.7)",
       baseURL: process.env.ZAI_BASE_URL || "https://api.z.ai/api/paas/v4",
       apiKey: process.env.ZAI_API_KEY || "",
-      model: process.env.ZAI_MODEL || "glm-4.6",
+      model: process.env.ZAI_MODEL || "glm-4.7",
       enabled: !!process.env.ZAI_API_KEY,
     },
     {

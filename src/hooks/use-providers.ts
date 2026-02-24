@@ -22,7 +22,7 @@ export function useProviders() {
       setProviders([
         { id: "groq", name: "Groq (Kimi K2)", type: "cloud", healthy: true },
         { id: "lmstudio", name: "LM Studio", type: "local", healthy: false },
-        { id: "zai", name: "Z.AI (GLM 4.6)", type: "cloud", healthy: false },
+        { id: "zai", name: "Z.AI (GLM 4.7)", type: "cloud", healthy: false },
         { id: "ollama", name: "Ollama", type: "local", healthy: false },
       ])
     } finally {

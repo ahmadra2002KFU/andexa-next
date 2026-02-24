@@ -1,4 +1,4 @@
-import { generateText, streamObject, streamText } from "ai";
+import { generateObject, generateText, streamObject, streamText } from "ai";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/prisma";
@@ -12,6 +12,18 @@ import type { ProviderType, ColumnMetadata, ExecutionResult } from "@/types";
 
 export const maxDuration = 120;
 const TRACE_EXEC = process.env.ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production";
+
+// Always-on server logger for critical pipeline events
+const slog = {
+  info: (...args: unknown[]) => console.log("[Chat API]", ...args),
+  warn: (...args: unknown[]) => console.warn("[Chat API]", ...args),
+  error: (...args: unknown[]) => console.error("[Chat API]", ...args),
+};
+const structuredLayerSchema = z.object({
+  initial_response: z.string().default(""),
+  generated_code: z.string().default(""),
+});
+type StructuredLayer = z.infer<typeof structuredLayerSchema>;
 
 function summarizeExecutionResults(executionResult: ExecutionResult): Record<string, unknown> {
   const entries = Object.entries(executionResult.results || {}).map(([key, value]) => {
@@ -39,6 +51,130 @@ function summarizeExecutionResults(executionResult: ExecutionResult): Record<str
   };
 }
 
+function cleanCodeBlock(code: string): string {
+  let c = code.trim();
+  if (c.startsWith("```python")) c = c.slice(9);
+  else if (c.startsWith("```")) c = c.slice(3);
+  if (c.endsWith("```")) c = c.slice(0, -3);
+  return c.trim();
+}
+
+function extractCodeFence(text: string): string {
+  const m = text.match(/```(?:python)?\s*([\s\S]*?)```/i);
+  return m?.[1]?.trim() ?? "";
+}
+
+function stripCodeFences(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, "").trim();
+}
+
+function parseStructuredFromText(text: string): StructuredLayer | null {
+  const candidates: string[] = [];
+  const trimmed = text.trim();
+  if (trimmed) candidates.push(trimmed);
+
+  const fencedJson = trimmed.match(/```json\s*([\s\S]*?)```/i)?.[1]?.trim();
+  if (fencedJson) candidates.push(fencedJson);
+
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1).trim());
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      const validated = structuredLayerSchema.safeParse(parsed);
+      if (validated.success) {
+        return {
+          initial_response: validated.data.initial_response.trim(),
+          generated_code: cleanCodeBlock(validated.data.generated_code),
+        };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null;
+}
+
+async function generateStructuredFallback(
+  provider: ProviderType,
+  system: string,
+  prompt: string
+): Promise<{ result: StructuredLayer | null; source: string }> {
+  try {
+    const obj = await generateObject({
+      model: getModel(provider),
+      schema: structuredLayerSchema,
+      system,
+      prompt,
+      temperature: 0.2,
+    });
+    const structured = {
+      initial_response: (obj.object.initial_response ?? "").trim(),
+      generated_code: cleanCodeBlock(obj.object.generated_code ?? ""),
+    };
+    if (structured.initial_response || structured.generated_code) {
+      return { result: structured, source: "generateObject" };
+    }
+  } catch (err) {
+    if (TRACE_EXEC) {
+      console.warn("[TRACE_EXEC] structured_fallback_generateObject_failed", err);
+    }
+  }
+
+  try {
+    const jsonText = await generateText({
+      model: getModel(provider),
+      system:
+        system +
+        '\n\nReturn ONLY valid JSON with keys "initial_response" and "generated_code".' +
+        " generated_code must be plain Python code (no markdown fences).",
+      prompt,
+      temperature: 0.2,
+      maxOutputTokens: 3000,
+    });
+    const parsed = parseStructuredFromText(jsonText.text ?? "");
+    if (parsed && (parsed.initial_response || parsed.generated_code)) {
+      return { result: parsed, source: "generateText-json" };
+    }
+  } catch (err) {
+    if (TRACE_EXEC) {
+      console.warn("[TRACE_EXEC] structured_fallback_generateText_json_failed", err);
+    }
+  }
+
+  try {
+    const plain = await generateText({
+      model: getModel(provider),
+      system:
+        system +
+        "\n\nRespond with: concise analysis and Python code in a markdown ```python``` block.",
+      prompt,
+      temperature: 0.2,
+      maxOutputTokens: 3000,
+    });
+    const text = (plain.text ?? "").trim();
+    const code = cleanCodeBlock(extractCodeFence(text));
+    const analysis = (code ? stripCodeFences(text) : text).trim();
+    if (analysis || code) {
+      return {
+        result: { initial_response: analysis, generated_code: code },
+        source: "generateText-plain",
+      };
+    }
+  } catch (err) {
+    if (TRACE_EXEC) {
+      console.warn("[TRACE_EXEC] structured_fallback_generateText_plain_failed", err);
+    }
+  }
+
+  return { result: null, source: "none" };
+}
+
 export async function POST(req: Request) {
   // 1. Authenticate
   const session = await auth();
@@ -55,6 +191,7 @@ export async function POST(req: Request) {
   }
   const { message, provider: providerInput, chatId: inputChatId } = parsed.data;
   const provider = (providerInput === "auto" ? "groq" : providerInput) as ProviderType;
+  slog.info("Request", { provider, messageLength: message.length, chatId: inputChatId ?? "new" });
 
   // 3. Get or create chat
   let chatId = inputChatId;
@@ -155,6 +292,8 @@ export async function POST(req: Request) {
         }
       }
 
+      slog.info("Tool phase done", { toolContextLength: toolContext.length, activeFile: activeFile?.originalFilename ?? "none", totalFiles: allFiles.length });
+
       // Rebuild prompt with tool context
       const finalPrompt = buildSystemPrompt({
         fileMetadata,
@@ -169,14 +308,13 @@ export async function POST(req: Request) {
 
       let lastAnalysis = "";
       let lastCode = "";
+      let streamFailed = false;
+      let streamErrorMessage = "";
 
       try {
         const { partialObjectStream } = streamObject({
           model: getModel(provider),
-          schema: z.object({
-            initial_response: z.string(),
-            generated_code: z.string(),
-          }),
+          schema: structuredLayerSchema,
           system: finalPrompt,
           prompt: message,
           temperature: 0.3,
@@ -200,18 +338,38 @@ export async function POST(req: Request) {
         }
       } catch (streamErr) {
         console.error("streamObject error:", streamErr);
-        if (!lastAnalysis && !lastCode) {
-          const errMsg = streamErr instanceof Error ? streamErr.message : "LLM streaming failed";
-          await sendEvent({ type: "error", message: `Analysis failed: ${errMsg}. Try again or switch provider.` });
-          await sendEvent({ type: "done", chatId: chatId! });
-          return;
+        streamFailed = true;
+        streamErrorMessage = streamErr instanceof Error ? streamErr.message : "LLM streaming failed";
+      }
+
+      let analysis = lastAnalysis.trim();
+      let generatedCode = cleanCodeBlock(lastCode);
+      let fallbackSource = "streamObject";
+
+      if (!analysis || !generatedCode) {
+        const fallback = await generateStructuredFallback(provider, finalPrompt, message);
+        if (fallback.result) {
+          if (!analysis) analysis = fallback.result.initial_response.trim();
+          if (!generatedCode) generatedCode = cleanCodeBlock(fallback.result.generated_code);
+          fallbackSource = fallback.source;
         }
       }
 
-      const analysis = lastAnalysis;
-      const generatedCode = lastCode;
+      if (TRACE_EXEC) {
+        console.log("[TRACE_EXEC] structured_layer_result", {
+          provider,
+          streamFailed,
+          streamErrorMessage,
+          fallbackSource,
+          analysisLength: analysis.length,
+          generatedCodeLength: generatedCode.length,
+        });
+      }
+
+      slog.info("Layer 1 complete", { fallbackSource, analysisLength: analysis.length, codeLength: generatedCode.length, streamFailed });
 
       if (!analysis && !generatedCode) {
+        slog.error("Empty response from model", { streamFailed, streamErrorMessage, fallbackSource });
         await sendEvent({ type: "error", message: "The model returned an empty response. Try again or switch providers." });
         await sendEvent({ type: "done", chatId: chatId! });
         return;
@@ -249,6 +407,7 @@ export async function POST(req: Request) {
 
         executionResult = retryResult.executionResult;
         executionResult.executed_code = retryResult.finalCode;
+        slog.info("Layer 2 complete", { success: retryResult.success, attempts: retryResult.totalAttempts, outputLength: executionResult.output?.length ?? 0 });
 
         if (TRACE_EXEC) {
           console.log("[TRACE_EXEC] chat_execute_result", summarizeExecutionResults(executionResult));
@@ -307,6 +466,7 @@ export async function POST(req: Request) {
       }
 
       await sendEvent({ type: "commentary_done", content: commentary });
+      slog.info("Layer 3 complete", { commentaryLength: commentary.length });
 
       // ── Save to database ───────────────────────────────────────
       await prisma.message.createMany({
@@ -327,7 +487,7 @@ export async function POST(req: Request) {
 
       await sendEvent({ type: "done", chatId });
     } catch (err) {
-      console.error("Chat pipeline error:", err);
+      slog.error("Pipeline crash", { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack?.split("\n").slice(0, 5).join("\n") : undefined });
       await sendEvent({ type: "error", message: err instanceof Error ? err.message : "Unknown error" });
     } finally {
       await writer.close();

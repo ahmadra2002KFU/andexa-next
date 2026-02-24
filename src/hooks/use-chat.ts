@@ -16,6 +16,16 @@ function isTraceExecEnabled(): boolean {
   return false
 }
 
+// Always-on logger for critical events (visible in browser console regardless of env)
+const log = {
+  info: (...args: unknown[]) => console.log("[Andexa]", ...args),
+  warn: (...args: unknown[]) => console.warn("[Andexa]", ...args),
+  error: (...args: unknown[]) => console.error("[Andexa]", ...args),
+  debug: (...args: unknown[]) => {
+    if (isTraceExecEnabled()) console.log("[Andexa:debug]", ...args)
+  },
+}
+
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return val !== null && typeof val === "object" && !Array.isArray(val)
 }
@@ -111,6 +121,7 @@ export function useChat() {
 
       try {
         abortRef.current = new AbortController()
+        log.info("Sending chat request", { provider, messageLength: content.length })
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -118,8 +129,11 @@ export function useChat() {
           signal: abortRef.current.signal,
         })
 
+        log.info("Chat response", { status: res.status, ok: res.ok, hasBody: !!res.body })
         if (!res.ok || !res.body) {
-          throw new Error(`Chat request failed: ${res.status}`)
+          const errorText = !res.ok ? await res.text().catch(() => "") : ""
+          log.error("Chat request failed", { status: res.status, errorText: errorText.slice(0, 500) })
+          throw new Error(`Chat request failed: ${res.status} ${errorText.slice(0, 200)}`)
         }
 
         const reader = res.body.getReader()
@@ -141,16 +155,25 @@ export function useChat() {
 
             try {
               const event: StreamEvent = JSON.parse(jsonStr)
+              log.debug("Stream event", event.type, "type" in event ? event.type : event)
               handleStreamEvent(event, accumulated)
-            } catch {
-              // skip malformed JSON
+            } catch (parseErr) {
+              log.warn("Malformed SSE JSON", { jsonStr: jsonStr.slice(0, 200), error: String(parseErr) })
             }
           }
         }
       } catch (err: unknown) {
-        if (err instanceof Error && err.name === "AbortError") return
+        if (err instanceof Error && err.name === "AbortError") {
+          log.info("Chat request aborted by user")
+          return
+        }
+        log.error("Chat request error", {
+          name: err instanceof Error ? err.name : "unknown",
+          message: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack?.split("\n").slice(0, 3).join("\n") : undefined,
+        })
         accumulated.commentary =
-          accumulated.commentary || "An error occurred while processing your request."
+          accumulated.commentary || `An error occurred: ${err instanceof Error ? err.message : "Unknown error"}`
       } finally {
         const { activeMessageId: finalId } = useChatStore.getState()
         if (finalId) {
@@ -324,39 +347,54 @@ export function useChat() {
       }
 
       case "phase":
+        log.info("Phase change:", event.phase)
         setToolPhase({ active: true, phase: event.phase })
         break
 
       case "tool_phase_start":
+        log.info("Tool phase started")
         setToolPhase({ active: true, phase: "tools", toolCalls: [] })
         break
 
       case "tool_call":
+        log.info("Tool call:", event.toolName, "iteration:", event.iteration)
         addToolCall({ iteration: event.iteration, toolName: event.toolName, status: "calling" })
         break
 
       case "tool_result":
+        log.info("Tool result:", "iteration:", event.iteration, "summary:", event.summary)
         updateToolCall(event.iteration, { status: "done", summary: event.summary })
         break
 
       case "tool_phase_complete":
+        log.info("Tool phase complete")
         setToolPhase({ active: false, phase: "thinking" })
         break
 
       case "retry_start":
+        log.warn("Retry started", { attempt: event.attempt, errorType: event.errorType })
         setToolPhase({ active: true, phase: "retrying", retryAttempt: event.attempt, retryError: event.errorType })
         break
 
       case "retry_failed":
+        log.error("All retries failed", { explanation: event.explanation })
         setToolPhase({ active: false, phase: "idle", retryExplanation: event.explanation })
         break
 
       case "error":
+        log.error("Server error event:", event.message)
         acc.commentary = acc.commentary || event.message
         replaceStreamingField("commentary", event.message)
         break
 
       case "done":
+        log.info("Stream complete", {
+          hasAnalysis: !!acc.analysis,
+          hasCode: !!acc.generatedCode,
+          hasCommentary: !!acc.commentary,
+          plotCount: acc.plots?.length ?? 0,
+          hasExecution: !!acc.executionResults,
+        })
         setToolPhase({ active: false, phase: "idle" })
         break
     }
