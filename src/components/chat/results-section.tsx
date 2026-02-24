@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -12,6 +12,15 @@ interface ResultsSectionProps {
   results?: ExecutionResult
   isStreaming?: boolean
 }
+function isTraceExecEnabled(): boolean {
+  if (process.env.NEXT_PUBLIC_ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production") {
+    return true
+  }
+  if (typeof window !== "undefined") {
+    return window.localStorage.getItem("ANDEXA_TRACE_EXECUTION") === "1"
+  }
+  return false
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,12 +30,21 @@ function formatValue(val: unknown): string {
   if (val === null || val === undefined) return "N/A"
   if (typeof val === "number") {
     if (!Number.isFinite(val)) return String(val)
-    // percentage-like (0-1 with decimals that look like ratios are left as-is)
     if (Number.isInteger(val)) return val.toLocaleString("en-US")
-    // Keep up to 2 decimal places for floats
     return val.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })
   }
   if (typeof val === "boolean") return val ? "Yes" : "No"
+  if (Array.isArray(val)) {
+    // Array of primitives → join; array of objects → show count
+    if (val.length === 0) return "[]"
+    if (val.every((item) => typeof item !== "object" || item === null)) {
+      return val.join(", ")
+    }
+    return `${val.length} items`
+  }
+  if (typeof val === "object") {
+    return `${Object.keys(val as Record<string, unknown>).length} fields`
+  }
   return String(val)
 }
 
@@ -49,6 +67,30 @@ function humanizeKey(key: string): string {
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return val !== null && typeof val === "object" && !Array.isArray(val)
+}
+
+function isSerializedDataFrame(val: unknown): val is Record<string, unknown> {
+  if (!isPlainObject(val)) return false
+  return (
+    val.type === "dataframe" &&
+    Array.isArray(val.columns) &&
+    (Array.isArray(val.head) || Array.isArray(val.data))
+  )
+}
+
+function toDataFrameTableData(df: Record<string, unknown>): {
+  columns: string[]
+  data: Record<string, unknown>[]
+  totalRows: number
+  truncated: boolean
+} {
+  const rows = (Array.isArray(df.data) ? df.data : df.head) as Record<string, unknown>[] | undefined
+  return {
+    columns: (df.columns as string[]) ?? [],
+    data: rows ?? [],
+    totalRows: Number(df.total_rows ?? df.totalRows ?? rows?.length ?? 0),
+    truncated: Boolean(df.truncated ?? false),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,12 +120,20 @@ function ObjectResultGrid({ data }: { data: Record<string, unknown> }) {
   const [expanded, setExpanded] = useState(false)
   const LIMIT = 12
 
-  // Separate scalar entries from nested objects
+  // Separate scalar entries from nested objects and arrays of objects
   const scalarEntries: [string, unknown][] = []
   const nestedEntries: [string, Record<string, unknown>][] = []
+  const dataframeEntries: [string, Record<string, unknown>][] = []
+  const arrayEntries: [string, Record<string, unknown>[]][] = []
 
   for (const [key, val] of entries) {
-    if (isPlainObject(val) && Object.keys(val).length > 0) {
+    // Skip plotly figures
+    if (isPlainObject(val) && (val as Record<string, unknown>).type === "plotly_figure") continue
+    if (isSerializedDataFrame(val)) {
+      dataframeEntries.push([key, val])
+    } else if (Array.isArray(val) && val.length > 0 && val.every((item) => isPlainObject(item))) {
+      arrayEntries.push([key, val as Record<string, unknown>[]])
+    } else if (isPlainObject(val) && Object.keys(val).length > 0) {
       nestedEntries.push([key, val as Record<string, unknown>])
     } else {
       scalarEntries.push([key, val])
@@ -121,8 +171,32 @@ function ObjectResultGrid({ data }: { data: Record<string, unknown> }) {
           <p className="text-xs font-semibold text-muted-foreground">{humanizeKey(key)}</p>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {Object.entries(nested).map(([k, v]) => {
+              if (isSerializedDataFrame(v)) {
+                return (
+                  <div key={k} className="col-span-full space-y-1.5">
+                    <p className="text-xs font-semibold text-muted-foreground">{humanizeKey(k)}</p>
+                    <DataFrameTable df={toDataFrameTableData(v)} />
+                  </div>
+                )
+              }
               if (isPlainObject(v)) {
-                // Deep nesting: render as inline JSON
+                const inner = v as Record<string, unknown>
+                const allScalar = Object.values(inner).every(
+                  (x) => x === null || typeof x !== "object"
+                )
+                if (allScalar) {
+                  return (
+                    <div key={k} className="col-span-full space-y-1.5">
+                      <p className="text-xs font-semibold text-muted-foreground">{humanizeKey(k)}</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {Object.entries(inner).map(([ik, iv]) => {
+                          const unit = detectUnit(ik, iv)
+                          return <KpiCard key={ik} label={humanizeKey(ik)} value={formatValue(iv)} unit={unit} />
+                        })}
+                      </div>
+                    </div>
+                  )
+                }
                 return (
                   <Card key={k} className="col-span-full border-border/50 bg-muted/30">
                     <CardContent className="p-3">
@@ -138,6 +212,53 @@ function ObjectResultGrid({ data }: { data: Record<string, unknown> }) {
           </div>
         </div>
       ))}
+
+      {/* Top-level dataframes */}
+      {dataframeEntries.map(([key, df]) => (
+        <div key={key} className="space-y-1.5">
+          <p className="text-xs font-semibold text-muted-foreground">{humanizeKey(key)}</p>
+          <DataFrameTable df={toDataFrameTableData(df)} />
+        </div>
+      ))}
+
+      {/* Arrays of objects as mini-tables */}
+      {arrayEntries.map(([key, rows]) => {
+        const cols = Object.keys(rows[0])
+        return (
+          <div key={key} className="space-y-1.5">
+            <p className="text-xs font-semibold text-muted-foreground">
+              {humanizeKey(key)} ({rows.length} items)
+            </p>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-muted/70">
+                    {cols.map((col) => (
+                      <th key={col} className="whitespace-nowrap px-3 py-2 text-left font-semibold text-foreground">
+                        {humanizeKey(col)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 20).map((row, i) => (
+                    <tr key={i} className={cn("border-t border-border/50", i % 2 === 1 && "bg-muted/20")}>
+                      {cols.map((col) => (
+                        <td key={col} className="whitespace-nowrap px-3 py-1.5 text-foreground/80">
+                          {formatValue(row[col])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {rows.length > 20 && (
+              <p className="text-[10px] text-muted-foreground">Showing 20 of {rows.length} rows</p>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -185,6 +306,23 @@ function DataFrameTable({ df }: { df: { columns: string[]; data: Record<string, 
 // ---------------------------------------------------------------------------
 
 export function ResultsSection({ results, isStreaming }: ResultsSectionProps) {
+  useEffect(() => {
+    if (!isTraceExecEnabled() || !results) return
+    const resultVal = results.result
+    const resultType = resultVal === undefined ? "undefined" : Array.isArray(resultVal) ? "array" : typeof resultVal
+    const resultKeys = isPlainObject(resultVal) ? Object.keys(resultVal).slice(0, 15) : []
+    console.log("[TRACE_EXEC] results_section_props", {
+      success: results.success,
+      hasError: !!results.error,
+      hasDataframe: !!results.dataframe,
+      dataframeColumns: results.dataframe?.columns.length,
+      dataframeRowsPreview: results.dataframe?.data.length,
+      resultType,
+      resultKeys,
+      executionTime: results.executionTime,
+    })
+  }, [results])
+
   if (!results && !isStreaming) return null
 
   if (isStreaming && !results) {
@@ -232,7 +370,6 @@ export function ResultsSection({ results, isStreaming }: ResultsSectionProps) {
   const resultVal = results.result
   const isObject = isPlainObject(resultVal) && Object.keys(resultVal).length > 0
   const isScalar = resultVal !== undefined && resultVal !== null && !isObject && !Array.isArray(resultVal)
-  const isArray = Array.isArray(resultVal)
 
   // --- DataFrame ---
   if (hasDataframe) {
@@ -250,8 +387,17 @@ export function ResultsSection({ results, isStreaming }: ResultsSectionProps) {
     )
   }
 
-  // --- Object / Dict (the main broken case) ---
+  // --- Object / Dict ---
   if (isObject) {
+    // Filter out plotly figures from the result object (they render in Visualization)
+    const filtered = Object.fromEntries(
+      Object.entries(resultVal as Record<string, unknown>).filter(([, v]) => {
+        if (isPlainObject(v) && (v as Record<string, unknown>).type === "plotly_figure") return false
+        return true
+      })
+    )
+    if (Object.keys(filtered).length === 0) return <ExecutionTimeBadge time={results.executionTime} />
+
     return (
       <Card className="mb-3 animate-in fade-in duration-300">
         <CardContent className="p-4">
@@ -259,10 +405,10 @@ export function ResultsSection({ results, isStreaming }: ResultsSectionProps) {
             <FlaskConical className="h-4 w-4" />
             Results
             <Badge variant="secondary" className="text-[10px]">
-              {Object.keys(resultVal).length} metrics
+              {Object.keys(filtered).length} metrics
             </Badge>
           </div>
-          <ObjectResultGrid data={resultVal as Record<string, unknown>} />
+          <ObjectResultGrid data={filtered} />
           <ExecutionTimeBadge time={results.executionTime} />
         </CardContent>
       </Card>

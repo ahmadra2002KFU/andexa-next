@@ -283,6 +283,18 @@ def execute(
 
     # Extract results
     result_value, plots = _extract_results(namespace)
+    try:
+        result_type = type(result_value).__name__ if result_value is not None else "None"
+        result_keys = list(result_value.keys())[:20] if isinstance(result_value, dict) else None
+        logger.info(
+            "[TRACE_EXEC] execute_success result_type=%s result_keys=%s plot_count=%s warnings=%s",
+            result_type,
+            result_keys,
+            len(plots),
+            len(warnings),
+        )
+    except Exception:
+        pass
 
     output = exec_result["stdout"]
     if exec_result["stderr"]:
@@ -378,36 +390,66 @@ def _extract_results(namespace: Dict[str, Any]) -> Tuple[Any, List[Dict]]:
         if name not in fig_names:
             fig_names.append(name)
 
+    def append_plot(name: str, fig_obj: Any) -> None:
+        serialized = serialize_value(fig_obj)
+        if not isinstance(serialized, dict):
+            logger.warning("[TRACE_EXEC] append_plot name=%s status=invalid_payload", name)
+            plots.append({"name": name, "json": None, "error": "Figure serialization returned invalid payload"})
+            return
+
+        fig_json = serialized.get("json")
+        if isinstance(fig_json, str):
+            if len(fig_json) <= MAX_PLOTLY_JSON_SIZE:
+                logger.info(
+                    "[TRACE_EXEC] append_plot name=%s status=ok json_size_bytes=%s has_bdata=%s",
+                    name,
+                    len(fig_json),
+                    "bdata" in fig_json,
+                )
+                plots.append({"name": name, "json": fig_json})
+            else:
+                size_mb = len(fig_json) / (1024 * 1024)
+                logger.warning(
+                    "[TRACE_EXEC] append_plot name=%s status=too_large json_size_bytes=%s",
+                    name,
+                    len(fig_json),
+                )
+                plots.append({"name": name, "json": None, "error": f"Figure too large ({size_mb:.1f}MB)"})
+            return
+
+        logger.warning(
+            "[TRACE_EXEC] append_plot name=%s status=error error=%s",
+            name,
+            str(serialized.get("error", "Failed to serialize figure")),
+        )
+        plots.append({
+            "name": name,
+            "json": None,
+            "error": str(serialized.get("error", "Failed to serialize figure")),
+        })
+
     for name in fig_names:
         val = namespace.get(name)
         if val is not None and is_fig(val) and id(val) not in seen_ids:
             seen_ids.add(id(val))
             _ensure_margins(val)
-            try:
-                fig_json = val.to_json()
-                if len(fig_json) <= MAX_PLOTLY_JSON_SIZE:
-                    plots.append({"name": name, "json": fig_json})
-                else:
-                    size_mb = len(fig_json) / (1024 * 1024)
-                    plots.append({
-                        "name": name,
-                        "json": None,
-                        "error": f"Figure too large ({size_mb:.1f}MB)",
-                    })
-            except Exception as e:
-                plots.append({"name": name, "json": None, "error": str(e)})
+            append_plot(name, val)
 
     # Also scan namespace for any other figures
     for name, val in namespace.items():
         if is_fig(val) and id(val) not in seen_ids:
             seen_ids.add(id(val))
             _ensure_margins(val)
-            try:
-                fig_json = val.to_json()
-                if len(fig_json) <= MAX_PLOTLY_JSON_SIZE:
-                    plots.append({"name": name, "json": fig_json})
-            except Exception:
-                pass
+            append_plot(name, val)
+
+    try:
+        logger.info(
+            "[TRACE_EXEC] extract_results result_var_type=%s plot_names=%s",
+            type(result_value).__name__ if result_value is not None else "None",
+            [p.get("name") for p in plots],
+        )
+    except Exception:
+        pass
 
     return result_value, plots
 

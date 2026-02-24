@@ -152,13 +152,57 @@ class DashboardResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _summarize_result_value(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {"kind": "none"}
+    if isinstance(value, dict):
+        return {"kind": "dict", "keys": list(value.keys())[:20], "size": len(value)}
+    if isinstance(value, list):
+        return {"kind": "list", "size": len(value)}
+    return {"kind": type(value).__name__}
+
+
+def _summarize_results_map(results: Dict[str, Any]) -> List[Dict[str, Any]]:
+    summary: List[Dict[str, Any]] = []
+    for key, value in results.items():
+        if isinstance(value, dict):
+            item = {
+                "key": key,
+                "type": value.get("type", "object"),
+                "keys": list(value.keys())[:12],
+            }
+            fig_json = value.get("json")
+            if isinstance(fig_json, str):
+                item["json_size_bytes"] = len(fig_json)
+                item["has_bdata"] = "bdata" in fig_json
+            summary.append(item)
+        else:
+            summary.append({"key": key, "type": type(value).__name__})
+    return summary
+
+
 def _reshape_execute_result(raw: Dict[str, Any]) -> ExecuteResponse:
     """Reshape the raw executor result to match the Next.js ExecutionResult interface."""
+    logger.info(
+        "[TRACE_EXEC] reshape_input success=%s result=%s plots=%s error=%s",
+        raw.get("success", False),
+        _summarize_result_value(raw.get("result")),
+        len(raw.get("plots", [])),
+        bool(raw.get("error")),
+    )
+
     results: Dict[str, Any] = {}
     if raw.get("result") is not None:
         results["result"] = raw["result"]
     for i, plot in enumerate(raw.get("plots", [])):
         results[f"plot_{i}"] = {"type": "plotly_figure", **plot}
+
+    logger.info(
+        "[TRACE_EXEC] reshape_output results_keys=%s results_summary=%s",
+        list(results.keys()),
+        _summarize_results_map(results),
+    )
+
     return ExecuteResponse(
         success=raw.get("success", False),
         output=raw.get("output", ""),
@@ -171,10 +215,23 @@ def _reshape_execute_result(raw: Dict[str, Any]) -> ExecuteResponse:
 @app.post("/execute", response_model=ExecuteResponse)
 async def execute_code(req: ExecuteRequest):
     """Execute sandboxed Python code against uploaded data files."""
+    logger.info(
+        "[TRACE_EXEC] /execute request timeout=%s file_count=%s code_len=%s",
+        req.timeout,
+        len(req.file_paths or []),
+        len(req.code or ""),
+    )
     raw = execute(
         code=req.code,
         file_paths=req.file_paths if req.file_paths else None,
         timeout=req.timeout,
+    )
+    logger.info(
+        "[TRACE_EXEC] /execute raw_result success=%s has_error=%s plot_count=%s output_len=%s",
+        raw.get("success", False),
+        bool(raw.get("error")),
+        len(raw.get("plots", [])),
+        len(raw.get("output", "")),
     )
     return _reshape_execute_result(raw)
 

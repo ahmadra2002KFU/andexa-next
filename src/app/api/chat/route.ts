@@ -11,6 +11,33 @@ import { chatRequestSchema } from "@/lib/validators/schemas";
 import type { ProviderType, ColumnMetadata, ExecutionResult } from "@/types";
 
 export const maxDuration = 120;
+const TRACE_EXEC = process.env.ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production";
+
+function summarizeExecutionResults(executionResult: ExecutionResult): Record<string, unknown> {
+  const entries = Object.entries(executionResult.results || {}).map(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      const json = obj.json;
+      return {
+        key,
+        type: obj.type ?? "object",
+        keys: Object.keys(obj).slice(0, 12),
+        jsonSizeBytes: typeof json === "string" ? json.length : undefined,
+        hasBdata: typeof json === "string" ? json.includes("bdata") : undefined,
+      };
+    }
+    return { key, type: Array.isArray(value) ? "array" : typeof value };
+  });
+
+  return {
+    success: executionResult.success,
+    outputLength: executionResult.output?.length ?? 0,
+    error: executionResult.error ? executionResult.error.slice(0, 240) : undefined,
+    executionTimeMs: executionResult.execution_time_ms,
+    resultKeys: Object.keys(executionResult.results || {}),
+    entries,
+  };
+}
 
 export async function POST(req: Request) {
   // 1. Authenticate
@@ -223,6 +250,10 @@ export async function POST(req: Request) {
         executionResult = retryResult.executionResult;
         executionResult.executed_code = retryResult.finalCode;
 
+        if (TRACE_EXEC) {
+          console.log("[TRACE_EXEC] chat_execute_result", summarizeExecutionResults(executionResult));
+        }
+
         if (!retryResult.success && retryResult.failureExplanation) {
           await sendEvent({ type: "retry_failed", totalAttempts: retryResult.totalAttempts, explanation: retryResult.failureExplanation });
         }
@@ -230,6 +261,9 @@ export async function POST(req: Request) {
 
       // Only send execution event if code was actually executed
       if (generatedCode.trim()) {
+        if (TRACE_EXEC) {
+          console.log("[TRACE_EXEC] chat_send_execution_event", summarizeExecutionResults(executionResult));
+        }
         await sendEvent({ type: "execution", result: executionResult });
       }
 

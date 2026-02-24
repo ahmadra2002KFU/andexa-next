@@ -7,6 +7,7 @@ serialization into JSON-safe Python dicts.
 
 import json
 import math
+import base64
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -143,8 +144,17 @@ def _serialize_series(series: Any) -> Dict[str, Any]:
 def _serialize_plotly_figure(fig: Any) -> Dict[str, Any]:
     """Serialize Plotly figure to dict."""
     try:
-        figure_json = fig.to_json()
+        fig_dict = fig.to_plotly_json() if hasattr(fig, "to_plotly_json") else json.loads(fig.to_json())
+        typed_arrays = _count_plotly_typed_arrays(fig_dict)
+        normalized = _normalize_plotly_payload(fig_dict)
+        figure_json = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False)
         json_size = len(figure_json)
+        logger.info(
+            "[TRACE_EXEC] plotly_serialize typed_arrays=%s json_size_bytes=%s has_bdata=%s",
+            typed_arrays,
+            json_size,
+            "bdata" in figure_json,
+        )
         if json_size > MAX_PLOTLY_SIZE:
             size_mb = json_size / (1024 * 1024)
             return {
@@ -162,3 +172,50 @@ def _serialize_plotly_figure(fig: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Plotly serialization failed: {e}")
         return {"type": "plotly_figure", "json": None, "error": str(e)}
+
+
+def _count_plotly_typed_arrays(value: Any) -> int:
+    """Count Plotly compact typed-array payloads: {'dtype': ..., 'bdata': ...}."""
+    if isinstance(value, dict):
+        hit = 1 if isinstance(value.get("dtype"), str) and isinstance(value.get("bdata"), str) else 0
+        return hit + sum(_count_plotly_typed_arrays(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_count_plotly_typed_arrays(v) for v in value)
+    if isinstance(value, tuple):
+        return sum(_count_plotly_typed_arrays(v) for v in value)
+    return 0
+
+
+def _normalize_plotly_payload(value: Any) -> Any:
+    """
+    Normalize Plotly payload values so JS renderers can consume them directly.
+
+    Plotly Python may emit numeric arrays in compact objects like:
+    {"dtype": "f8", "bdata": "..."}.
+    The web renderer used by the app expects plain JSON arrays.
+    """
+    import numpy as np
+
+    if isinstance(value, dict):
+        maybe_dtype = value.get("dtype")
+        maybe_bdata = value.get("bdata")
+        if isinstance(maybe_dtype, str) and isinstance(maybe_bdata, str):
+            try:
+                raw = base64.b64decode(maybe_bdata)
+                arr = np.frombuffer(raw, dtype=np.dtype(maybe_dtype))
+                shape = value.get("shape")
+                if isinstance(shape, list) and shape:
+                    try:
+                        arr = arr.reshape(tuple(int(x) for x in shape))
+                    except Exception:
+                        pass
+                return [serialize_value(item) for item in arr.tolist()]
+            except Exception:
+                # Fall through to recursive dict normalization.
+                pass
+        return {str(k): _normalize_plotly_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_plotly_payload(v) for v in value]
+    if isinstance(value, tuple):
+        return [_normalize_plotly_payload(v) for v in value]
+    return serialize_value(value)

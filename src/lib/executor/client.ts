@@ -2,8 +2,45 @@ import type { ExecutionResult } from "@/types";
 
 const EXECUTOR_URL = process.env.EXECUTOR_URL || "http://localhost:8020";
 const TIMEOUT = 60_000;
+const TRACE_EXEC = process.env.ANDEXA_TRACE_EXECUTION === "1" || process.env.NODE_ENV !== "production";
+
+function summarizeExecutorResponse(path: string, payload: unknown): Record<string, unknown> {
+  if (path !== "/execute") return { path, type: typeof payload };
+  const result = payload as ExecutionResult;
+  const entries = Object.entries(result.results || {}).map(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      const json = obj.json;
+      return {
+        key,
+        type: obj.type ?? "object",
+        keys: Object.keys(obj).slice(0, 8),
+        jsonSizeBytes: typeof json === "string" ? json.length : undefined,
+        hasBdata: typeof json === "string" ? json.includes("bdata") : undefined,
+      };
+    }
+    return { key, type: Array.isArray(value) ? "array" : typeof value };
+  });
+  return {
+    path,
+    success: result.success,
+    outputLength: result.output?.length ?? 0,
+    resultKeys: Object.keys(result.results || {}),
+    entries,
+    executionTimeMs: result.execution_time_ms,
+  };
+}
 
 async function post<T>(path: string, body: unknown): Promise<T> {
+  if (TRACE_EXEC) {
+    const reqBody = body as Record<string, unknown>;
+    console.log("[TRACE_EXEC] executor_request", {
+      path,
+      codeLength: typeof reqBody.code === "string" ? reqBody.code.length : undefined,
+      fileCount: Array.isArray(reqBody.file_paths) ? reqBody.file_paths.length : undefined,
+      timeout: reqBody.timeout,
+    });
+  }
   const res = await fetch(`${EXECUTOR_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -12,9 +49,16 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "Unknown error");
+    if (TRACE_EXEC) {
+      console.error("[TRACE_EXEC] executor_error", { path, status: res.status, body: text.slice(0, 1000) });
+    }
     throw new Error(`Executor ${path} failed (${res.status}): ${text}`);
   }
-  return res.json() as Promise<T>;
+  const json = (await res.json()) as T;
+  if (TRACE_EXEC) {
+    console.log("[TRACE_EXEC] executor_response", summarizeExecutorResponse(path, json));
+  }
+  return json;
 }
 
 async function postForm<T>(path: string, formData: FormData, timeoutMs = 30_000): Promise<T> {
