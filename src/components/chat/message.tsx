@@ -10,6 +10,7 @@ import { CommentarySection } from "./commentary-section"
 import { GenerationButtons } from "./generation-buttons"
 import { ToolPhaseIndicator } from "./tool-phase-indicator"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { cn } from "@/lib/utils"
 
 interface MessageProps {
   message: ChatMessage
@@ -43,6 +44,7 @@ export function Message({ message, isStreaming, streamingResponse, toolPhase }: 
   const hasPlots = !!(resp.plots && resp.plots.length > 0)
   const hasResults = !!(resp.executionResults)
   const hasCommentary = !!(resp.commentary)
+  const hasResponseBlocks = hasAnalysis || hasCode || hasPlots || hasResults || hasCommentary
 
   return (
     <div className="flex gap-3 py-3">
@@ -53,32 +55,40 @@ export function Message({ message, isStreaming, streamingResponse, toolPhase }: 
         {isStreaming && toolPhase && toolPhase.phase !== "idle" && (
           <ToolPhaseIndicator toolPhase={toolPhase} />
         )}
-        {hasAnalysis && (
-          <div className="animate-in fade-in duration-300">
-            <AnalysisSection content={resp.analysis || ""} isStreaming={isStreaming} />
+        {hasResponseBlocks && (
+          <div className="mt-1 space-y-2 border-l border-border/50 pl-3 sm:pl-4">
+            {hasAnalysis && (
+              <div className="animate-in fade-in duration-300">
+                <AnalysisSection content={resp.analysis || ""} isStreaming={isStreaming} />
+              </div>
+            )}
+            {hasCode && (
+              <div className="animate-in fade-in duration-300">
+                <CodeBlock code={resp.generatedCode || ""} />
+              </div>
+            )}
+            {hasPlots && (
+              <div className="animate-in fade-in duration-300">
+                <Visualization plots={resp.plots} />
+              </div>
+            )}
+            {hasResults && (
+              <div className="animate-in fade-in duration-300">
+                <ResultsSection results={resp.executionResults} isStreaming={isStreaming} />
+              </div>
+            )}
+            {hasCommentary && (
+              <div className="animate-in fade-in duration-300">
+                <CommentarySection content={resp.commentary || ""} isStreaming={isStreaming} />
+              </div>
+            )}
           </div>
         )}
-        {hasCode && (
-          <div className="animate-in fade-in duration-300">
-            <CodeBlock code={resp.generatedCode || ""} />
+        {showGenButtons && (
+          <div className={cn("mt-2", hasResponseBlocks && "pl-3 sm:pl-4")}>
+            <GenerationButtons />
           </div>
         )}
-        {hasPlots && (
-          <div className="animate-in fade-in duration-300">
-            <Visualization plots={resp.plots} />
-          </div>
-        )}
-        {hasResults && (
-          <div className="animate-in fade-in duration-300">
-            <ResultsSection results={resp.executionResults} isStreaming={isStreaming} />
-          </div>
-        )}
-        {hasCommentary && (
-          <div className="animate-in fade-in duration-300">
-            <CommentarySection content={resp.commentary || ""} isStreaming={isStreaming} />
-          </div>
-        )}
-        {showGenButtons && <GenerationButtons />}
       </div>
     </div>
   )

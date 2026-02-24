@@ -3,6 +3,7 @@
 import { useCallback, useRef } from "react"
 import { useChatStore } from "@/stores/chat-store"
 import { useSettingsStore } from "@/stores/settings-store"
+import { useFileStore } from "@/stores/file-store"
 import type { AssistantResponse, PlotData, ExecutionResult } from "@/types/chat"
 import type { StreamEvent } from "@/types"
 
@@ -103,6 +104,7 @@ export function useChat() {
   } = useChatStore()
 
   const provider = useSettingsStore((s) => s.provider)
+  const activeFileId = useFileStore((s) => s.activeFileId)
   const abortRef = useRef<AbortController | null>(null)
 
   const sendMessage = useCallback(
@@ -125,7 +127,7 @@ export function useChat() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: content, provider }),
+          body: JSON.stringify({ message: content, provider, activeFileId: activeFileId ?? undefined }),
           signal: abortRef.current.signal,
         })
 
@@ -184,7 +186,7 @@ export function useChat() {
         abortRef.current = null
       }
     },
-    [isStreaming, provider, addUserMessage, startStreaming, finalizeResponse, stopStreaming]
+    [isStreaming, provider, activeFileId, addUserMessage, startStreaming, finalizeResponse, stopStreaming]
   )
 
   function handleStreamEvent(event: StreamEvent, acc: AssistantResponse) {

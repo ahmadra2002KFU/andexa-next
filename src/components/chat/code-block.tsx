@@ -5,6 +5,12 @@ import { Button } from "@/components/ui/button"
 import { Code, Copy, Check, ChevronDown, ChevronRight } from "lucide-react"
 import { useState, useCallback } from "react"
 import { useSettingsStore } from "@/stores/settings-store"
+import { cn } from "@/lib/utils"
+import {
+  RESPONSE_BLOCK_CARD_CLASS,
+  RESPONSE_BLOCK_HEADER_CLASS,
+  RESPONSE_BLOCK_HEADER_INTERACTIVE_CLASS,
+} from "./block-styles"
 
 interface CodeBlockProps {
   code: string
@@ -24,13 +30,17 @@ export function CodeBlock({ code }: CodeBlockProps) {
   if (!code) return null
 
   return (
-    <Card className="mb-3 overflow-hidden">
+    <Card className={RESPONSE_BLOCK_CARD_CLASS}>
       <CardContent className="p-0">
         <div
-          className="flex cursor-pointer items-center justify-between bg-muted/50 px-4 py-2"
+          className={cn(
+            RESPONSE_BLOCK_HEADER_CLASS,
+            RESPONSE_BLOCK_HEADER_INTERACTIVE_CLASS,
+            "justify-between"
+          )}
           onClick={() => setExpanded(!expanded)}
         >
-          <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+          <div className="flex items-center gap-2">
             <Code className="h-4 w-4" />
             Python Code
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -38,7 +48,7 @@ export function CodeBlock({ code }: CodeBlockProps) {
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 px-2"
+            className="h-6 w-6 p-0"
             onClick={(e) => {
               e.stopPropagation()
               handleCopy()
@@ -48,7 +58,7 @@ export function CodeBlock({ code }: CodeBlockProps) {
           </Button>
         </div>
         {expanded && (
-          <pre className="max-h-96 overflow-auto bg-zinc-950 p-4 text-sm text-zinc-100">
+          <pre className="max-h-[28rem] overflow-auto bg-zinc-950 p-3 text-sm text-zinc-100">
             <code>{code}</code>
           </pre>
         )}

@@ -3,6 +3,11 @@
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { BarChart3 } from "lucide-react"
+import {
+  RESPONSE_BLOCK_CARD_CLASS,
+  RESPONSE_BLOCK_CONTENT_CLASS,
+  RESPONSE_BLOCK_HEADER_CLASS,
+} from "./block-styles"
 
 interface AnalysisSectionProps {
   content: string
@@ -13,14 +18,14 @@ export function AnalysisSection({ content, isStreaming }: AnalysisSectionProps) 
   if (!content && !isStreaming) return null
 
   return (
-    <Card className="mb-3">
-      <CardContent className="p-4">
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-primary">
-          <BarChart3 className="h-4 w-4" />
-          Analysis
-        </div>
+    <Card className={RESPONSE_BLOCK_CARD_CLASS}>
+      <div className={RESPONSE_BLOCK_HEADER_CLASS}>
+        <BarChart3 className="h-4 w-4" />
+        Analysis
+      </div>
+      <CardContent className={RESPONSE_BLOCK_CONTENT_CLASS}>
         {content ? (
-          <pre className="whitespace-pre-wrap text-sm text-foreground">{content}</pre>
+          <pre className="whitespace-pre-wrap text-sm text-foreground/95">{content}</pre>
         ) : (
           <div className="space-y-2">
             <Skeleton className="h-4 w-full" />

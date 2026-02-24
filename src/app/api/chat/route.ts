@@ -25,6 +25,99 @@ const structuredLayerSchema = z.object({
 });
 type StructuredLayer = z.infer<typeof structuredLayerSchema>;
 
+type UploadedFileRow = {
+  id: string;
+  originalFilename: string;
+  storedPath: string;
+  rows: number;
+  columns: number;
+  columnMetadata: unknown;
+  isActive: boolean;
+  createdAt: Date;
+};
+
+const MAX_CONTEXT_FILES = (() => {
+  const parsed = Number.parseInt(process.env.ANDEXA_MAX_CONTEXT_FILES || "4", 10);
+  if (!Number.isFinite(parsed)) return 4;
+  return Math.min(20, Math.max(1, parsed));
+})();
+
+function normalizeToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function stripExtension(filename: string): string {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function isFileMentioned(messageNormalized: string, filename: string): boolean {
+  if (!messageNormalized) return false;
+  const full = normalizeToken(filename);
+  const base = normalizeToken(stripExtension(filename));
+  const variable = normalizeToken(filenameToVariable(filename));
+  return (
+    (full.length >= 3 && messageNormalized.includes(full)) ||
+    (base.length >= 3 && messageNormalized.includes(base)) ||
+    (variable.length >= 3 && messageNormalized.includes(variable))
+  );
+}
+
+function hasMultiFileIntent(message: string): boolean {
+  const text = message.toLowerCase();
+  if (/\b(join|merge|compare|across|between|combine|union)\b/.test(text)) return true;
+  return /all\s+files|multiple\s+files|multi-?file|all\s+datasets|all\s+tables/.test(text);
+}
+
+function pickActiveFile(
+  files: UploadedFileRow[],
+  preferredActiveFileId?: string
+): UploadedFileRow | null {
+  if (files.length === 0) return null;
+  if (preferredActiveFileId) {
+    const preferred = files.find((f) => f.id === preferredActiveFileId);
+    if (preferred) return preferred;
+  }
+  const markedActive = files.find((f) => f.isActive);
+  return markedActive ?? files[0];
+}
+
+function buildExecutionScope(
+  files: UploadedFileRow[],
+  activeFile: UploadedFileRow | null,
+  message: string,
+  maxFiles: number
+): UploadedFileRow[] {
+  if (files.length === 0) return [];
+
+  const mentioned = files.filter((f) => isFileMentioned(normalizeToken(message), f.originalFilename));
+  const multiFileIntent = hasMultiFileIntent(message) || mentioned.length > 1;
+
+  const scoped: UploadedFileRow[] = [];
+  const seen = new Set<string>();
+  const add = (file?: UploadedFileRow | null) => {
+    if (!file || seen.has(file.id)) return;
+    scoped.push(file);
+    seen.add(file.id);
+  };
+
+  add(activeFile);
+  for (const file of mentioned) add(file);
+
+  if (multiFileIntent) {
+    for (const file of files.filter((f) => f.isActive)) {
+      add(file);
+      if (scoped.length >= maxFiles) return scoped;
+    }
+    for (const file of files) {
+      add(file);
+      if (scoped.length >= maxFiles) return scoped;
+    }
+  }
+
+  if (scoped.length === 0) add(files[0]);
+  return scoped.slice(0, maxFiles);
+}
+
 function summarizeExecutionResults(executionResult: ExecutionResult): Record<string, unknown> {
   const entries = Object.entries(executionResult.results || {}).map(([key, value]) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -189,7 +282,12 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return Response.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { message, provider: providerInput, chatId: inputChatId } = parsed.data;
+  const {
+    message,
+    provider: providerInput,
+    chatId: inputChatId,
+    activeFileId: preferredActiveFileId,
+  } = parsed.data;
   const provider = (providerInput === "auto" ? "groq" : providerInput) as ProviderType;
   slog.info("Request", { provider, messageLength: message.length, chatId: inputChatId ?? "new" });
 
@@ -202,18 +300,33 @@ export async function POST(req: Request) {
     chatId = chat.id;
   }
 
-  // 4. Fetch file metadata + rules
-  const [activeFile, rules] = await Promise.all([
-    prisma.uploadedFile.findFirst({ where: { userId, isActive: true } }),
+  // 4. Fetch files + rules and build scoped context
+  const [initialFiles, rules] = await Promise.all([
+    prisma.uploadedFile.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        originalFilename: true,
+        storedPath: true,
+        rows: true,
+        columns: true,
+        columnMetadata: true,
+        isActive: true,
+        createdAt: true,
+      },
+    }),
     prisma.rule.findMany({ where: { userId, active: true }, orderBy: { priority: "desc" } }),
   ]);
 
-  const fileMetadata = activeFile?.columnMetadata as ColumnMetadata | null;
+  let allFiles = initialFiles as UploadedFileRow[];
+  let activeFile = pickActiveFile(allFiles, preferredActiveFileId);
+  let scopedFiles = buildExecutionScope(allFiles, activeFile, message, MAX_CONTEXT_FILES);
+  let fileMetadata = activeFile?.columnMetadata as ColumnMetadata | null;
   const userRules = rules.map((r) => r.text);
 
-  // Multi-file context
-  const allFiles = await prisma.uploadedFile.findMany({ where: { userId } });
-  const multiFileContext = allFiles.map((f) => {
+  // Multi-file context (scoped only)
+  const multiFileContext = scopedFiles.map((f) => {
     const meta = f.columnMetadata as Record<string, unknown> | null;
     const basicInfo = (meta?.basic_info ?? {}) as Record<string, unknown>;
     return {
@@ -250,7 +363,9 @@ export async function POST(req: Request) {
         await sendEvent({ type: "tool_phase_start", maxIterations: 5 });
         const toolStart = Date.now();
         try {
-          const tools = createDataTools(userId);
+          const tools = createDataTools(userId, {
+            contextFileIds: scopedFiles.map((f) => f.id),
+          });
           const toolResult = await generateText({
             model: getModel(provider),
             system: systemPrompt + "\n\nYou have access to data exploration tools. Use them to understand the data before writing code.",
@@ -292,12 +407,51 @@ export async function POST(req: Request) {
         }
       }
 
-      slog.info("Tool phase done", { toolContextLength: toolContext.length, activeFile: activeFile?.originalFilename ?? "none", totalFiles: allFiles.length });
+      // Tools may have changed the active file. Recompute scope to keep prompt + execution aligned.
+      if (allFiles.length > 0) {
+        allFiles = (await prisma.uploadedFile.findMany({
+          where: { userId },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            originalFilename: true,
+            storedPath: true,
+            rows: true,
+            columns: true,
+            columnMetadata: true,
+            isActive: true,
+            createdAt: true,
+          },
+        })) as UploadedFileRow[];
+
+        activeFile = pickActiveFile(allFiles, preferredActiveFileId);
+        scopedFiles = buildExecutionScope(allFiles, activeFile, message, MAX_CONTEXT_FILES);
+        fileMetadata = activeFile?.columnMetadata as ColumnMetadata | null;
+      }
+
+      slog.info("Tool phase done", {
+        toolContextLength: toolContext.length,
+        activeFile: activeFile?.originalFilename ?? "none",
+        totalFiles: allFiles.length,
+        scopedFiles: scopedFiles.length,
+      });
 
       // Rebuild prompt with tool context
+      const scopedMultiFileContext = scopedFiles.map((f) => {
+        const meta = f.columnMetadata as Record<string, unknown> | null;
+        const basicInfo = (meta?.basic_info ?? {}) as Record<string, unknown>;
+        return {
+          filename: f.originalFilename,
+          variableName: filenameToVariable(f.originalFilename),
+          rows: f.rows,
+          columns: f.columns,
+          columnNames: (basicInfo.column_names as string[]) ?? [],
+        };
+      });
+
       const finalPrompt = buildSystemPrompt({
         fileMetadata,
-        multiFileContext: multiFileContext.length > 1 ? multiFileContext : undefined,
+        multiFileContext: scopedMultiFileContext.length > 1 ? scopedMultiFileContext : undefined,
         userRules: userRules.length > 0 ? userRules : undefined,
         toolContext: toolContext || undefined,
       });
@@ -386,13 +540,9 @@ export async function POST(req: Request) {
         const columns = fileMetadata?.basic_info.column_names ?? [];
         const dtypes = fileMetadata?.basic_info.dtypes ?? {};
 
-        // Pass ALL files to the executor so multi-file code works.
-        // Active file first (becomes `df`), then all others by variable name.
-        const filePaths: string[] = [];
-        if (activeFile) filePaths.push(activeFile.storedPath);
-        for (const f of allFiles) {
-          if (f.id !== activeFile?.id) filePaths.push(f.storedPath);
-        }
+        // Only load scoped files for this request (active + relevant subset).
+        // First path is active and becomes `df` in the executor.
+        const filePaths = scopedFiles.map((f) => f.storedPath);
         const retryResult = await executeWithRetry({
           code: generatedCode,
           userQuery: message,

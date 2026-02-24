@@ -426,7 +426,7 @@ export function Visualization({ plots }: VisualizationProps) {
   if (plotItems.length === 0) return null
 
   return (
-    <div className="mb-3">
+    <div>
       <Card className="overflow-hidden">
         <CardContent className="p-0">
           <div
