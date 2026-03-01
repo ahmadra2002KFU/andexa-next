@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { useSidebar } from "@/hooks/use-sidebar"
 import { Sidebar } from "@/components/sidebar/sidebar"
 import { ChatContainer } from "@/components/chat/chat-container"
@@ -10,6 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Menu, LogOut } from "lucide-react"
 import { signOut } from "next-auth/react"
 import { useFileStore } from "@/stores/file-store"
+import { resetWorkspaceSessionId } from "@/lib/workspace-session"
 
 interface AppShellProps {
   userName: string
@@ -18,6 +20,15 @@ interface AppShellProps {
 export function AppShell({ userName }: AppShellProps) {
   const { sidebarOpen, toggleSidebar } = useSidebar()
   const uploading = useFileStore((s) => s.uploading)
+  const clearFiles = useFileStore((s) => s.clearAll)
+
+  useEffect(() => {
+    const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined
+    if (nav?.type === "reload") {
+      resetWorkspaceSessionId()
+      clearFiles()
+    }
+  }, [clearFiles])
 
   return (
     <div className="flex h-screen overflow-hidden">

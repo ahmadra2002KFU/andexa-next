@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   title: "Andexa - Chat with your data",
   description: "AI-powered data analysis platform",
   icons: {
-    icon: "/Andexa2.png",
+    icon: "/favicon.ico",
   },
 }
 

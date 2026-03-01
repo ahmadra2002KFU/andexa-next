@@ -15,12 +15,22 @@ import { RulesSection } from "./rules-section"
 import { RecentChats } from "./recent-chats"
 import { ProviderSelect } from "./provider-select"
 import { useTheme } from "next-themes"
+import { useCallback } from "react"
+import { useFileStore } from "@/stores/file-store"
+import { resetWorkspaceSessionId } from "@/lib/workspace-session"
 
 export function Sidebar() {
   const { sidebarOpen, sidebarWidth } = useSidebar()
   const clearMessages = useChatStore((s) => s.clearMessages)
+  const clearFiles = useFileStore((s) => s.clearAll)
   const { analysisMode, setAnalysisMode, autoExpandCode, setAutoExpandCode, showExecutionTime, setShowExecutionTime } = useSettingsStore()
   const { theme, setTheme } = useTheme()
+
+  const handleNewChat = useCallback(() => {
+    resetWorkspaceSessionId()
+    clearFiles()
+    clearMessages()
+  }, [clearFiles, clearMessages])
 
   return (
     <aside
@@ -30,7 +40,7 @@ export function Sidebar() {
       <div className="flex h-full flex-col" style={{ minWidth: sidebarWidth }}>
         {/* Brand */}
         <div className="flex items-center gap-3 p-4 pb-2">
-          <Image src="/Andexa2.png" alt="Andexa Logo" width={40} height={40} className="h-10 w-auto" />
+          <Image src="/andexa-logo.png" alt="Andexa Logo" width={154} height={40} className="h-10 w-auto" />
         </div>
 
         <div className="flex-1 overflow-y-auto px-4">
@@ -91,7 +101,7 @@ export function Sidebar() {
 
         {/* New Chat */}
         <div className="border-t p-4">
-          <Button className="w-full andexa-gradient hover:opacity-90 text-white" onClick={clearMessages}>
+          <Button className="w-full andexa-gradient hover:opacity-90 text-white" onClick={handleNewChat}>
             <Plus className="mr-2 h-4 w-4" />
             New Chat
           </Button>
